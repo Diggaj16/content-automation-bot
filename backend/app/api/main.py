@@ -57,7 +57,8 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Routers included in later tasks (ideas, drafts, triggers)
+    from app.api.routers.ideas import router as ideas_router
+    _app.include_router(ideas_router)
 
     return _app
 
