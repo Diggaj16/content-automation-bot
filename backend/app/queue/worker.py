@@ -57,6 +57,8 @@ class WorkerSettings:
     ]
     on_startup  = startup
     on_shutdown = shutdown
+    # arq reads redis_settings as a class attribute — evaluated at import time.
+    # Tests should not import this module directly; use mocks at the task level.
     redis_settings = _get_redis_settings()
     max_jobs    = 10
     job_timeout = 600   # seconds — 10 min max per job

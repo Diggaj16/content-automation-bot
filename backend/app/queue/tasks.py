@@ -2,9 +2,9 @@
 Stub arq task functions — one per agent.
 Each agent plan replaces its stub with the real implementation.
 """
-import logging
+from app.utils.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 async def research_agent_task(
