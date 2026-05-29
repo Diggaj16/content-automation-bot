@@ -69,6 +69,23 @@ class TestUpsertRawContent:
         payload = insert_call.args[0]
         assert payload["pre_score"] == 8.0
 
+    def test_publication_date_none_not_in_payload(self):
+        """When publication_date is None, it must not appear in the insert payload."""
+        sb = _make_sb()
+        content = ArticleContent(
+            url="https://www.livemint.com/markets/test",
+            normalized_url="https://www.livemint.com/markets/test",
+            title="Test article",
+            full_text="text " * 100,
+            word_count=100,
+            paywall_detected=False,
+            publication_date=None,
+        )
+        upsert_raw_content(sb, content, _make_summary(), pre_score=5.0)
+        insert_call = sb.table.return_value.insert.call_args
+        payload = insert_call.args[0]
+        assert "publication_date" not in payload
+
 
 class TestRecordSiteSuccess:
     def test_resets_consecutive_failures(self):
@@ -119,6 +136,14 @@ class TestRecordSiteFailure:
         site_id = UUID("22222222-2222-2222-2222-222222222222")
         deactivated = record_site_failure(sb, site_id, "err", failure_threshold=5)
         assert deactivated is True
+
+    def test_returns_false_when_site_not_found(self):
+        """When the site doesn't exist in the DB, function returns False without crashing."""
+        sb = _make_sb()
+        sb.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
+        site_id = UUID("33333333-3333-3333-3333-333333333333")
+        result = record_site_failure(sb, site_id, "some error", failure_threshold=5)
+        assert result is False
 
 
 class TestUpsertCostLog:

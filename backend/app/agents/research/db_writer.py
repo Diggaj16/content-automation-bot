@@ -49,6 +49,9 @@ def upsert_raw_content(
 
     try:
         resp = supabase.table("raw_content").insert(payload).execute()
+        if not resp.data:
+            logger.warning("upsert_raw_content: insert returned empty data", extra={"url": content.url})
+            return None
         article_id: str = resp.data[0]["id"]
         logger.info("upsert_raw_content: stored", extra={"id": article_id, "url": content.url})
         return article_id
@@ -115,6 +118,7 @@ def record_site_failure(
         }).execute()
     except Exception as exc:
         logger.warning("record_site_failure failed", extra={"site_id": str(site_id), "error": str(exc)})
+        deactivated = False  # DB write may not have completed; don't report deactivation that didn't happen
 
     return deactivated
 
