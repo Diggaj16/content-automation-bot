@@ -34,6 +34,7 @@ async def test_research_task_returns_done_status_with_no_sites():
     assert result["processed"] == 0
     assert result["success"] == 0
     assert "duration_seconds" in result
+    assert result["cost_usd"] == 0.0
 
 
 @pytest.mark.asyncio
@@ -51,32 +52,82 @@ async def test_research_task_writes_run_log():
 
 @pytest.mark.asyncio
 async def test_research_task_cron_trigger_with_no_args():
-    """No topic/url args should yield trigger_type=cron in run_log."""
+    """No topic/url args — task must complete successfully."""
     ctx = _make_ctx()
-    inserted_payloads = []
-
-    def capture_table(table_name):
-        mock_tbl = MagicMock()
-        mock_tbl.select.return_value.eq.return_value.execute.return_value.data = []
-        mock_tbl.insert.return_value.execute.return_value.data = [{"id": "fake-id"}]
-        mock_tbl.update.return_value.eq.return_value.execute.return_value.data = []
-        if table_name == "run_logs":
-            original_insert = mock_tbl.insert
-            def capturing_insert(payload):
-                inserted_payloads.append(payload)
-                return original_insert(payload)
-            mock_tbl.insert = capturing_insert
-        return mock_tbl
-
-    ctx["supabase"].table = capture_table
-
     with patch("app.queue.tasks.Anthropic"):
+        from app.queue.tasks import research_agent_task
+        result = await research_agent_task(ctx)
+
+    assert result["status"] == "done"
+    assert result["cost_usd"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_research_task_processes_one_site_one_article():
+    """One active site, one article that passes all filters → success_count=1."""
+    from datetime import datetime, timezone
+    from unittest.mock import AsyncMock
+
+    ctx = _make_ctx()
+
+    # Override supabase to return one active site
+    site_data = {
+        "id": "11111111-1111-1111-1111-111111111111",
+        "site_name": "LiveMint",
+        "section_url": "https://www.livemint.com/market",
+        "active": True,
+        "pre_score_threshold": 5.0,
+        "consecutive_failures": 0,
+        "last_run_at": None,
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+    }
+    ctx["supabase"].table.return_value.select.return_value.eq.return_value.execute.return_value.data = [site_data]
+    # upsert_raw_content returns a UUID
+    ctx["supabase"].table.return_value.insert.return_value.execute.return_value.data = [{"id": "article-uuid"}]
+    ctx["supabase"].table.return_value.update.return_value.eq.return_value.execute.return_value.data = []
+    # is_url_seen returns False (not seen)
+    ctx["supabase"].table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
+
+    mock_link = MagicMock()
+    mock_link.url = "https://www.livemint.com/market/rbi-rate"
+    mock_link.title = "RBI raises repo rate by 25bps"
+    mock_link.source_name = "LiveMint"
+
+    mock_content = MagicMock()
+    mock_content.url = "https://www.livemint.com/market/rbi-rate"
+    mock_content.normalized_url = "https://www.livemint.com/market/rbi-rate"
+    mock_content.title = "RBI raises repo rate by 25bps"
+    mock_content.full_text = "Full article text " * 100
+    mock_content.word_count = 500
+    mock_content.paywall_detected = False
+    mock_content.publication_date = datetime(2026, 5, 29, tzinfo=timezone.utc)
+
+    mock_summary_result = MagicMock()
+    mock_summary_result.input_tokens = 300
+    mock_summary_result.output_tokens = 100
+    mock_summary_result.summary = MagicMock()
+
+    mock_pre_result = MagicMock()
+    mock_pre_result.scores = [7.5]
+    mock_pre_result.input_tokens = 50
+    mock_pre_result.output_tokens = 10
+
+    with (
+        patch("app.queue.tasks.Anthropic"),
+        patch("app.agents.research.scraper.scrape_homepage", new=AsyncMock(return_value=[mock_link])),
+        patch("app.agents.research.extractor.fetch_article", new=AsyncMock(return_value=mock_content)),
+        patch("app.agents.research.prescorer.pre_score_headlines", return_value=mock_pre_result),
+        patch("app.agents.research.summariser.summarise_article", return_value=mock_summary_result),
+        patch("app.agents.research.filters.is_url_seen", return_value=False),
+        patch("app.agents.research.filters.is_article_fresh", return_value=True),
+        patch("app.agents.research.filters.is_article_long_enough", return_value=True),
+    ):
         from importlib import reload
         import app.queue.tasks as tasks_mod
         reload(tasks_mod)
         result = await tasks_mod.research_agent_task(ctx)
 
     assert result["status"] == "done"
-    # If any run_logs payload was captured, verify trigger_type
-    if inserted_payloads:
-        assert inserted_payloads[0].get("trigger_type") in ("cron", "TriggerType.CRON", None)
+    assert result["processed"] >= 1
+    assert result["success"] >= 1

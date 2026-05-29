@@ -50,8 +50,20 @@ async def research_agent_task(
     sonnet_in = sonnet_out = 0
 
     # Fetch all active sites
-    sites_resp = supabase.table("curated_sites").select("*").eq("active", True).execute()
-    sites = [CuratedSite(**s) for s in sites_resp.data]
+    try:
+        sites_resp = supabase.table("curated_sites").select("*").eq("active", True).execute()
+        sites = [CuratedSite(**s) for s in sites_resp.data]
+    except Exception as exc:
+        logger.error(f"research_agent_task: failed to fetch curated_sites | err={exc}")
+        return {
+            "status": "error",
+            "processed": 0,
+            "success": 0,
+            "failures": 0,
+            "duration_seconds": round(time.time() - start_time, 2),
+            "cost_usd": 0.0,
+            "error": str(exc),
+        }
     logger.info(f"research_agent_task: {len(sites)} active sites to process")
 
     for site in sites:
@@ -69,55 +81,69 @@ async def research_agent_task(
             haiku_in += pre_result.input_tokens
             haiku_out += pre_result.output_tokens
 
+            if len(pre_result.scores) != len(links):
+                logger.warning(
+                    f"pre_score count mismatch: {len(links)} links vs {len(pre_result.scores)} scores"
+                )
+
             # Step 3 — Process each article that passes the threshold
             for link, score in zip(links, pre_result.scores):
                 processed_count += 1
+                try:
+                    if score < site.pre_score_threshold:
+                        trace_entries.append(log_agent_decision(
+                            logger, "skip_low_score", "Below site threshold",
+                            {"url": link.url, "score": score, "threshold": site.pre_score_threshold},
+                        ))
+                        continue
 
-                if score < site.pre_score_threshold:
-                    trace_entries.append(log_agent_decision(
-                        logger, "skip_low_score", "Below site threshold",
-                        {"url": link.url, "score": score, "threshold": site.pre_score_threshold},
-                    ))
-                    continue
+                    normalized = normalize_url(link.url)
+                    if is_url_seen(normalized, supabase):
+                        continue
 
-                normalized = normalize_url(link.url)
-                if is_url_seen(normalized, supabase):
-                    continue
+                    content = await fetch_article(link.url)
 
-                content = await fetch_article(link.url)
+                    if content.paywall_detected:
+                        trace_entries.append(log_agent_decision(
+                            logger, "skip_paywall", "Paywall or thin content",
+                            {"url": link.url, "word_count": content.word_count},
+                        ))
+                        failure_count += 1
+                        continue
 
-                if content.paywall_detected:
-                    trace_entries.append(log_agent_decision(
-                        logger, "skip_paywall", "Paywall or thin content",
-                        {"url": link.url, "word_count": content.word_count},
-                    ))
-                    failure_count += 1
-                    continue
+                    if not is_article_fresh(content.publication_date, settings.article_max_age_days):
+                        continue
 
-                if not is_article_fresh(content.publication_date, settings.article_max_age_days):
-                    continue
+                    if not is_article_long_enough(content.word_count, settings.article_min_words):
+                        continue
 
-                if not is_article_long_enough(content.word_count, settings.article_min_words):
-                    continue
+                    # Step 4 — Structured summarisation (Sonnet)
+                    sum_result = summarise_article(
+                        content.full_text, content.title, anthropic_client, settings.claude_model_heavy,
+                    )
+                    sonnet_in += sum_result.input_tokens
+                    sonnet_out += sum_result.output_tokens
 
-                # Step 4 — Structured summarisation (Sonnet)
-                sum_result = summarise_article(
-                    content.full_text, content.title, anthropic_client, settings.claude_model_heavy,
-                )
-                sonnet_in += sum_result.input_tokens
-                sonnet_out += sum_result.output_tokens
-
-                # Step 5 — Write to DB
-                article_id = upsert_raw_content(
-                    supabase, content, sum_result.summary, score, source_name=site.site_name,
-                )
-                if article_id:
-                    success_count += 1
-                    trace_entries.append(log_agent_decision(
-                        logger, "store_article", "Stored successfully",
-                        {"id": article_id, "url": link.url, "score": score},
-                    ))
-                else:
+                    # Step 5 — Write to DB
+                    article_id = upsert_raw_content(
+                        supabase, content, sum_result.summary, score, source_name=site.site_name,
+                    )
+                    if article_id:
+                        success_count += 1
+                        trace_entries.append(log_agent_decision(
+                            logger, "store_article", "Stored successfully",
+                            {"id": article_id, "url": link.url, "score": score},
+                        ))
+                    else:
+                        failure_count += 1
+                        trace_entries.append(log_agent_decision(
+                            logger, "store_failed", "upsert_raw_content returned None",
+                            {"url": link.url, "score": score},
+                        ))
+                except Exception as article_exc:
+                    logger.warning(
+                        f"research_agent_task: article error | url={link.url} | err={article_exc}"
+                    )
                     failure_count += 1
 
             record_site_success(supabase, site.id)
@@ -157,7 +183,10 @@ async def research_agent_task(
         errors=errors,
         token_cost=token_cost_dict,
     )
-    supabase.table("run_logs").insert(run_log.model_dump()).execute()
+    try:
+        supabase.table("run_logs").insert(run_log.model_dump()).execute()
+    except Exception as exc:
+        logger.error(f"research_agent_task: failed to write run_log | err={exc}")
 
     # Cost alert
     if settings.slack_webhook_url and total_usd >= settings.daily_cost_alert_usd:
