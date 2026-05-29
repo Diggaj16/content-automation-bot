@@ -17,6 +17,7 @@ dependencies = [
     "voyageai>=0.3.2",
     "python-dotenv>=1.0.0",
     "httpx>=0.26.0,<0.29",
+    "crawl4ai>=0.4.0",
 ]
 
 [project.optional-dependencies]
