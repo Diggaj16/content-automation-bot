@@ -30,6 +30,6 @@ frontend/.env.local
 .DS_Store
 Thumbs.db
 
-# IDE
-.vscode/
+# IDE — keep shared project settings, ignore personal files
+.vscode/*.code-workspace
 .idea/

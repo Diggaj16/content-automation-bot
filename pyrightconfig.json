@@ -1,0 +1,11 @@
+{
+  "include": ["backend"],
+  "exclude": ["backend/.venv", "frontend/node_modules"],
+  "venvPath": "backend",
+  "venv": ".venv",
+  "pythonVersion": "3.11",
+  "pythonPlatform": "Windows",
+  "typeCheckingMode": "basic",
+  "reportMissingImports": true,
+  "reportMissingModuleSource": false
+}
