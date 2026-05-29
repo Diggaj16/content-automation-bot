@@ -1,14 +1,19 @@
+from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 from typing import Optional
 from functools import lru_cache
 
+# Resolves to backend/ regardless of where the process is started from
+_HERE = Path(__file__).parent.parent
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(_HERE / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
+        frozen=True,
     )
 
     # Supabase
