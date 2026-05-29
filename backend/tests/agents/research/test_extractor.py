@@ -57,8 +57,15 @@ class TestNormalizeUrl:
         assert "utm_source" not in result
 
     def test_idempotent(self):
-        url = "https://www.livemint.com/markets/article"
+        # With query params — normalizing twice should give the same result
+        url = "https://www.livemint.com/markets/article?page=2&id=123"
         assert normalize_url(normalize_url(url)) == normalize_url(url)
+
+    def test_stable_param_ordering(self):
+        # Same params in different order must normalize to the same URL
+        url_a = "https://example.com/article?id=1&page=2"
+        url_b = "https://example.com/article?page=2&id=1"
+        assert normalize_url(url_a) == normalize_url(url_b)
 
 
 # ── fetch_article ─────────────────────────────────────────────────────────────
@@ -144,6 +151,23 @@ async def test_fetch_article_exception_returns_safe_default():
     assert content.paywall_detected is True
     assert content.full_text == ""
     assert content.title == ""
+
+
+@pytest.mark.asyncio
+async def test_fetch_article_returns_safe_default_on_failed_crawl():
+    """result.success=False should return same safe default as an exception."""
+    mock_crawler = _make_mock_crawler(
+        markdown="Some text that would pass paywall threshold " * 10,
+        metadata={"title": "Some article"},
+        success=False,
+    )
+
+    with patch("app.agents.research.extractor.AsyncWebCrawler", return_value=mock_crawler):
+        content = await fetch_article("https://example.com/article")
+
+    assert content.word_count == 0
+    assert content.paywall_detected is True
+    assert content.full_text == ""
 
 
 @pytest.mark.asyncio

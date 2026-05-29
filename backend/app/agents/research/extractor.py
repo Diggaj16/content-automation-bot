@@ -56,7 +56,7 @@ def normalize_url(url: str) -> str:
         for k, v in parse_qs(parsed.query, keep_blank_values=False).items()
         if k.lower() not in _TRACKING_PARAMS
     }
-    clean_query = urlencode(clean_params, doseq=True)
+    clean_query = urlencode(sorted(clean_params.items()), doseq=True)
     clean_path = parsed.path.rstrip("/") or "/"
 
     return urlunparse((
@@ -99,6 +99,20 @@ async def fetch_article(
         logger.warning(
             "fetch_article failed",
             extra={"url": url, "error": str(exc)},
+        )
+        return ArticleContent(
+            url=url,
+            normalized_url=normalized,
+            title="",
+            full_text="",
+            word_count=0,
+            paywall_detected=True,
+        )
+
+    if not result.success:
+        logger.warning(
+            "fetch_article: crawl unsuccessful",
+            extra={"url": url},
         )
         return ArticleContent(
             url=url,
