@@ -67,9 +67,10 @@ def pre_score_headlines(
     headlines_text = "\n".join(f"{i + 1}. {title}" for i, title in enumerate(titles))
 
     try:
+        # max_tokens: ~6 chars per score entry; 512 covers up to ~300 headlines safely
         message = client.messages.create(
             model=model,
-            max_tokens=256,
+            max_tokens=512,
             system=_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": headlines_text}],
         )
