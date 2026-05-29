@@ -369,8 +369,162 @@ async def creation_agent_task(
     Args:
         idea_ids: List of approved idea UUIDs to generate content for.
     """
-    logger.info(f"creation_agent_task called | idea_ids={idea_ids}")
-    return {"status": "stub", "agent": "creation"}
+    import time
+    from app.agents.creation.brand_context import get_brand_context
+    from app.agents.creation.content_generator import generate_content
+    from app.agents.creation.finance_flags import detect_finance_flags
+    from app.agents.creation.db_writer import write_draft, upsert_cost_log
+    from app.utils.slack import send_slack_alert
+    from app.utils.logging import format_token_cost, log_agent_decision
+    from app.db.models import Idea, DraftCreate, RunLogCreate, TriggerType
+
+    settings = ctx["settings"]
+    supabase = ctx["supabase"]
+    start_time = time.time()
+
+    anthropic_client = Anthropic(api_key=settings.anthropic_api_key)
+
+    voyage_client = None
+    if settings.voyage_api_key:
+        import voyageai
+        voyage_client = voyageai.Client(api_key=settings.voyage_api_key)
+
+    processed_count = 0
+    draft_count = 0
+    failure_count = 0
+    errors: list[dict] = []
+    trace_entries: list[str] = []
+    sonnet_in = sonnet_out = 0
+
+    for idea_id in idea_ids:
+        processed_count += 1
+        try:
+            # Step 1 — Fetch idea
+            idea_resp = (
+                supabase.table("ideas")
+                .select("*")
+                .eq("id", idea_id)
+                .execute()
+            )
+            if not idea_resp.data:
+                logger.warning(f"creation_agent_task: idea not found | id={idea_id}")
+                failure_count += 1
+                continue
+            idea = Idea(**idea_resp.data[0])
+
+            # Step 2 — Fetch source article context (optional)
+            article_context = ""
+            if idea.source_article_id:
+                art_resp = (
+                    supabase.table("raw_content")
+                    .select("structured_summary")
+                    .eq("id", str(idea.source_article_id))
+                    .execute()
+                )
+                if art_resp.data and art_resp.data[0].get("structured_summary"):
+                    s = art_resp.data[0]["structured_summary"]
+                    article_context = (
+                        f"Story: {s.get('story_narrative', '')}\n"
+                        f"Key data: {', '.join(s.get('key_data_points', []))}\n"
+                        f"Mechanism: {s.get('mechanism', '')}\n"
+                        f"Implications: {s.get('implications', '')}"
+                    )
+
+            # Step 3 — Embed idea text and get brand context
+            brand_ctx = ""
+            if voyage_client:
+                from app.agents.scoring.embedder import embed_text
+                embed_input = f"{idea.platform.value}: {idea.edited_angle or idea.angle}"
+                embedding = embed_text(embed_input, voyage_client)
+                brand_ctx = get_brand_context(embedding, idea.platform.value, supabase)
+
+            # Step 4 — Generate content with Claude Sonnet
+            gen_result = generate_content(
+                idea, article_context, brand_ctx, anthropic_client, settings.claude_model_heavy
+            )
+            sonnet_in += gen_result.input_tokens
+            sonnet_out += gen_result.output_tokens
+
+            if gen_result.draft_create is None:
+                trace_entries.append(log_agent_decision(
+                    logger, "no_draft", "generate_content returned None",
+                    {"idea_id": idea_id, "platform": idea.platform.value},
+                ))
+                failure_count += 1
+                continue
+
+            # Step 5 — Detect finance flags
+            flags = detect_finance_flags(gen_result.draft_create.content_text)
+            draft_with_flags = DraftCreate(**{
+                **gen_result.draft_create.model_dump(),
+                "finance_flags": flags,
+            })
+
+            # Step 6 — Write draft to DB
+            draft_id = write_draft(supabase, draft_with_flags)
+            if draft_id:
+                draft_count += 1
+                trace_entries.append(log_agent_decision(
+                    logger, "draft_written", "Draft stored",
+                    {"draft_id": draft_id, "idea_id": idea_id, "platform": idea.platform.value},
+                ))
+            else:
+                failure_count += 1
+                trace_entries.append(log_agent_decision(
+                    logger, "draft_write_failed", "write_draft returned None",
+                    {"idea_id": idea_id},
+                ))
+
+        except Exception as exc:
+            logger.error(f"creation_agent_task: idea error | id={idea_id} | err={exc}")
+            errors.append({"idea_id": idea_id, "error": str(exc)})
+            failure_count += 1
+
+    duration = time.time() - start_time
+
+    sonnet_cost = format_token_cost(sonnet_in, sonnet_out, settings.claude_model_heavy)
+    total_usd = sonnet_cost["estimated_usd"]
+    total_tokens = sonnet_in + sonnet_out
+    token_cost_dict = {"sonnet": sonnet_cost, "total_usd": round(total_usd, 6)}
+
+    upsert_cost_log(supabase, "creation_agent", total_usd=total_usd, token_count=total_tokens)
+
+    run_log = RunLogCreate(
+        agent_name="creation_agent",
+        trigger_type=TriggerType.ORCHESTRATOR,
+        processed_count=processed_count,
+        success_count=draft_count,
+        failure_count=failure_count,
+        duration_seconds=round(duration, 2),
+        reasoning_trace="\n".join(trace_entries) if trace_entries else None,
+        errors=errors,
+        token_cost=token_cost_dict,
+    )
+    try:
+        supabase.table("run_logs").insert(run_log.model_dump()).execute()
+    except Exception as exc:
+        logger.error(f"creation_agent_task: failed to write run_log | err={exc}")
+
+    if settings.slack_webhook_url and total_usd >= settings.daily_cost_alert_usd:
+        send_slack_alert(
+            settings.slack_webhook_url,
+            f"Creation agent cost alert: ${total_usd:.4f} in this run "
+            f"(threshold: ${settings.daily_cost_alert_usd})",
+        )
+
+    logger.info(
+        f"creation_agent_task done | processed={processed_count} "
+        f"drafts={draft_count} failures={failure_count} "
+        f"duration={duration:.1f}s cost=${total_usd:.4f}"
+    )
+    return {
+        "status": "done",
+        "processed": processed_count,
+        "drafts_created": draft_count,
+        "failures": failure_count,
+        "duration_seconds": round(duration, 2),
+        "cost_usd": round(total_usd, 6),
+    }
 
 
 async def publishing_agent_task(ctx: dict) -> dict:
