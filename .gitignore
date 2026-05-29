@@ -12,8 +12,9 @@ venv/
 env/
 
 # Env files — NEVER commit real credentials
-backend/.env
 .env
+.env.*
+!.env.example
 
 # Test + coverage
 .pytest_cache/
