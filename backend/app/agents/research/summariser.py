@@ -9,6 +9,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 
 from anthropic import Anthropic
@@ -22,6 +23,9 @@ logger = get_logger(__name__)
 # Prevents accidental huge prompts; ~12 000 chars ≈ 3 000 words — more than
 # enough for a thorough summary of any news article.
 _MAX_ARTICLE_CHARS = 12_000
+
+# Maximum tokens Claude may return for a summary response.
+_MAX_OUTPUT_TOKENS = 1024
 
 _SYSTEM_PROMPT = (
     "You are a financial journalist writing structured summaries for an Indian "
@@ -44,6 +48,9 @@ class SummaryResult:
     summary: StructuredSummary
     input_tokens: int = 0
     output_tokens: int = 0
+
+
+_KNOWN_FIELDS = frozenset(StructuredSummary.model_fields.keys())
 
 
 def _fallback_summary(title: str) -> SummaryResult:
@@ -79,13 +86,21 @@ def summarise_article(
     try:
         message = client.messages.create(
             model=model,
-            max_tokens=1024,
+            max_tokens=_MAX_OUTPUT_TOKENS,
             system=_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
+        if not message.content:
+            logger.warning("summarise_article: empty content list in API response", extra={"title": title})
+            return _fallback_summary(title)
         raw = message.content[0].text.strip()
+        # Strip markdown code fences if Claude wraps the response
+        json_match = re.search(r'\{.*\}', raw, re.DOTALL)
+        if json_match:
+            raw = json_match.group(0)
         data = json.loads(raw)
-        summary = StructuredSummary(**data)
+        filtered = {k: v for k, v in data.items() if k in _KNOWN_FIELDS}
+        summary = StructuredSummary(**filtered)
         return SummaryResult(
             summary=summary,
             input_tokens=message.usage.input_tokens,

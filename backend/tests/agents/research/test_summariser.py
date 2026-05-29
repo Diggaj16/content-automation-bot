@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from app.agents.research.summariser import summarise_article, SummaryResult
+from app.agents.research.summariser import summarise_article, SummaryResult, _MAX_ARTICLE_CHARS
 from app.db.models import StructuredSummary
 
 _VALID_SUMMARY = {
@@ -75,7 +75,7 @@ class TestSummariseArticle:
         call_kwargs = client.messages.create.call_args.kwargs
         user_content = call_kwargs["messages"][0]["content"]
         # The user message must not contain more than 12_000 + len("Title: Title\n\n") chars
-        assert len(user_content) <= 12_100  # small buffer for "Title: " prefix
+        assert len(user_content) <= _MAX_ARTICLE_CHARS + len("Title: Title\n\n")
 
     def test_uses_specified_model(self):
         client = _make_mock_client(json.dumps(_VALID_SUMMARY))
@@ -90,3 +90,32 @@ class TestSummariseArticle:
         assert result.summary.content_angles == []
         assert result.summary.mechanism == ""
         assert result.summary.implications == ""
+
+    def test_empty_content_list_returns_fallback(self):
+        """Empty content list from API should return fallback, not raise IndexError."""
+        mock_msg = MagicMock()
+        mock_msg.content = []
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = mock_msg
+        result = summarise_article("article text", "article title", mock_client, "claude-sonnet-4-5")
+        assert isinstance(result.summary, StructuredSummary)
+        assert result.summary.story_narrative == "article title"
+        assert result.input_tokens == 0
+
+    def test_markdown_fenced_json_is_parsed_correctly(self):
+        """Claude sometimes wraps JSON in markdown fences; must be handled gracefully."""
+        import json
+        fenced = f"```json\n{json.dumps(_VALID_SUMMARY)}\n```"
+        client = _make_mock_client(fenced)
+        result = summarise_article("text", "title", client, "claude-sonnet-4-5")
+        assert result.summary.story_narrative == _VALID_SUMMARY["story_narrative"]
+        assert isinstance(result.input_tokens, int)
+
+    def test_extra_keys_in_json_are_ignored(self):
+        """Claude may return extra fields; only known StructuredSummary fields should be used."""
+        import json
+        extra_key_summary = {**_VALID_SUMMARY, "confidence": 0.9, "source": "RBI press release"}
+        client = _make_mock_client(json.dumps(extra_key_summary))
+        result = summarise_article("text", "title", client, "claude-sonnet-4-5")
+        assert isinstance(result.summary, StructuredSummary)
+        assert result.summary.story_narrative == _VALID_SUMMARY["story_narrative"]
