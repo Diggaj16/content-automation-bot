@@ -213,11 +213,150 @@ async def research_agent_task(
 
 async def scoring_agent_task(ctx: dict) -> dict:
     """
-    Scoring agent — reads unprocessed raw_content, scores, generates ideas.
+    Scoring agent — generates content ideas from unprocessed raw_content articles.
     Triggered: by event after research_agent_task completes.
     """
-    logger.info("scoring_agent_task called")
-    return {"status": "stub", "agent": "scoring"}
+    import time
+    from anthropic import Anthropic
+    from app.agents.scoring.embedder import embed_text
+    from app.agents.scoring.coverage_checker import check_recent_coverage
+    from app.agents.scoring.idea_generator import generate_ideas
+    from app.agents.scoring.db_writer import write_ideas, mark_article_processed, upsert_cost_log
+    from app.utils.slack import send_slack_alert
+    from app.utils.logging import format_token_cost, log_agent_decision
+    from app.db.models import RawContent, IdeaCreate, RunLogCreate, TriggerType
+
+    settings = ctx["settings"]
+    supabase = ctx["supabase"]
+    start_time = time.time()
+
+    anthropic_client = Anthropic(api_key=settings.anthropic_api_key)
+
+    voyage_client = None
+    if settings.voyage_api_key:
+        import voyageai
+        voyage_client = voyageai.Client(api_key=settings.voyage_api_key)
+
+    processed_count = 0
+    ideas_created_count = 0
+    failure_count = 0
+    errors: list[dict] = []
+    trace_entries: list[str] = []
+    sonnet_in = sonnet_out = 0
+
+    try:
+        resp = supabase.table("raw_content").select("*").eq("processed", False).limit(50).execute()
+        articles = [RawContent(**r) for r in resp.data]
+    except Exception as exc:
+        logger.error(f"scoring_agent_task: failed to fetch raw_content | err={exc}")
+        return {
+            "status": "error",
+            "processed": 0,
+            "ideas_created": 0,
+            "failures": 0,
+            "duration_seconds": round(time.time() - start_time, 2),
+            "cost_usd": 0.0,
+            "error": str(exc),
+        }
+
+    logger.info(f"scoring_agent_task: {len(articles)} unprocessed articles")
+
+    for article in articles:
+        processed_count += 1
+        try:
+            embedding: list[float] = []
+            if voyage_client is not None:
+                embed_input = (
+                    f"{article.title}. "
+                    f"{article.structured_summary.story_narrative if article.structured_summary else ''}"
+                )
+                embedding = embed_text(embed_input, voyage_client)
+
+            idea_result = generate_ideas(article, anthropic_client, settings.claude_model_heavy)
+            sonnet_in += idea_result.input_tokens
+            sonnet_out += idea_result.output_tokens
+
+            if not idea_result.ideas:
+                trace_entries.append(log_agent_decision(
+                    logger, "no_ideas", "generate_ideas returned empty list",
+                    {"article_id": str(article.id), "title": article.title},
+                ))
+                mark_article_processed(supabase, article.id)
+                continue
+
+            final_ideas: list[IdeaCreate] = []
+            for idea in idea_result.ideas:
+                is_covered = check_recent_coverage(embedding, idea.platform.value, supabase)
+                final_ideas.append(IdeaCreate(**{
+                    **idea.model_dump(),
+                    "recent_coverage_flag": is_covered,
+                    "source_article_id":    article.id,
+                    "source_article_date":  article.publication_date,
+                }))
+
+            created_ids = write_ideas(supabase, final_ideas, article.id, article.publication_date)
+            ideas_created_count += len(created_ids)
+
+            if len(created_ids) < len(final_ideas):
+                failure_count += len(final_ideas) - len(created_ids)
+
+            trace_entries.append(log_agent_decision(
+                logger, "ideas_written", f"{len(created_ids)} ideas stored",
+                {"article_id": str(article.id), "title": article.title, "ideas": len(created_ids)},
+            ))
+
+            mark_article_processed(supabase, article.id)
+
+        except Exception as exc:
+            logger.error(f"scoring_agent_task: article error | id={article.id} | err={exc}")
+            errors.append({"article_id": str(article.id), "error": str(exc)})
+            failure_count += 1
+
+    duration = time.time() - start_time
+
+    sonnet_cost = format_token_cost(sonnet_in, sonnet_out, settings.claude_model_heavy)
+    total_usd = sonnet_cost["estimated_usd"]
+    total_tokens = sonnet_in + sonnet_out
+    token_cost_dict = {"sonnet": sonnet_cost, "total_usd": round(total_usd, 6)}
+
+    upsert_cost_log(supabase, "scoring_agent", total_usd=total_usd, token_count=total_tokens)
+
+    run_log = RunLogCreate(
+        agent_name="scoring_agent",
+        trigger_type=TriggerType.EVENT,
+        processed_count=processed_count,
+        success_count=ideas_created_count,
+        failure_count=failure_count,
+        duration_seconds=round(duration, 2),
+        reasoning_trace="\n".join(trace_entries) if trace_entries else None,
+        errors=errors,
+        token_cost=token_cost_dict,
+    )
+    try:
+        supabase.table("run_logs").insert(run_log.model_dump()).execute()
+    except Exception as exc:
+        logger.error(f"scoring_agent_task: failed to write run_log | err={exc}")
+
+    if settings.slack_webhook_url and total_usd >= settings.daily_cost_alert_usd:
+        send_slack_alert(
+            settings.slack_webhook_url,
+            f"Scoring agent cost alert: ${total_usd:.4f} in this run "
+            f"(threshold: ${settings.daily_cost_alert_usd})",
+        )
+
+    logger.info(
+        f"scoring_agent_task done | processed={processed_count} "
+        f"ideas={ideas_created_count} failures={failure_count} "
+        f"duration={duration:.1f}s cost=${total_usd:.4f}"
+    )
+    return {
+        "status": "done",
+        "processed": processed_count,
+        "ideas_created": ideas_created_count,
+        "failures": failure_count,
+        "duration_seconds": round(duration, 2),
+        "cost_usd": round(total_usd, 6),
+    }
 
 
 async def creation_agent_task(
