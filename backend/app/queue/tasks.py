@@ -2,6 +2,7 @@
 Stub arq task functions — one per agent.
 Each agent plan replaces its stub with the real implementation.
 """
+from anthropic import Anthropic
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -19,8 +20,166 @@ async def research_agent_task(
         topic: Optional topic hint for targeted research (e.g. "SEBI announcement")
         url:   Optional specific URL to fast-track (e.g. breaking news)
     """
-    logger.info(f"research_agent_task called | topic={topic} | url={url}")
-    return {"status": "stub", "agent": "research"}
+    import time
+    from app.agents.research.scraper import scrape_homepage
+    from app.agents.research.extractor import fetch_article, normalize_url
+    from app.agents.research.filters import is_url_seen, is_article_fresh, is_article_long_enough
+    from app.agents.research.prescorer import pre_score_headlines
+    from app.agents.research.summariser import summarise_article
+    from app.agents.research.db_writer import (
+        upsert_raw_content, record_site_success, record_site_failure, upsert_cost_log,
+    )
+    from app.utils.slack import send_slack_alert
+    from app.utils.logging import format_token_cost, log_agent_decision
+    from app.db.models import CuratedSite, RunLogCreate, TriggerType
+
+    settings = ctx["settings"]
+    supabase = ctx["supabase"]
+    start_time = time.time()
+
+    anthropic_client = Anthropic(api_key=settings.anthropic_api_key)
+
+    processed_count = 0
+    success_count = 0
+    failure_count = 0
+    errors: list[dict] = []
+    trace_entries: list[str] = []
+
+    # Separate token tracking per model for accurate cost calculation
+    haiku_in = haiku_out = 0
+    sonnet_in = sonnet_out = 0
+
+    # Fetch all active sites
+    sites_resp = supabase.table("curated_sites").select("*").eq("active", True).execute()
+    sites = [CuratedSite(**s) for s in sites_resp.data]
+    logger.info(f"research_agent_task: {len(sites)} active sites to process")
+
+    for site in sites:
+        try:
+            # Step 1 — Scrape section page
+            links = await scrape_homepage(site.section_url, site.site_name)
+            if not links:
+                record_site_failure(supabase, site.id, "No links extracted", settings.site_failure_pause_threshold)
+                failure_count += 1
+                continue
+
+            # Step 2 — Batch pre-score all headlines (one Haiku call per site)
+            titles = [lnk.title for lnk in links]
+            pre_result = pre_score_headlines(titles, anthropic_client, settings.claude_model_light)
+            haiku_in += pre_result.input_tokens
+            haiku_out += pre_result.output_tokens
+
+            # Step 3 — Process each article that passes the threshold
+            for link, score in zip(links, pre_result.scores):
+                processed_count += 1
+
+                if score < site.pre_score_threshold:
+                    trace_entries.append(log_agent_decision(
+                        logger, "skip_low_score", "Below site threshold",
+                        {"url": link.url, "score": score, "threshold": site.pre_score_threshold},
+                    ))
+                    continue
+
+                normalized = normalize_url(link.url)
+                if is_url_seen(normalized, supabase):
+                    continue
+
+                content = await fetch_article(link.url)
+
+                if content.paywall_detected:
+                    trace_entries.append(log_agent_decision(
+                        logger, "skip_paywall", "Paywall or thin content",
+                        {"url": link.url, "word_count": content.word_count},
+                    ))
+                    failure_count += 1
+                    continue
+
+                if not is_article_fresh(content.publication_date, settings.article_max_age_days):
+                    continue
+
+                if not is_article_long_enough(content.word_count, settings.article_min_words):
+                    continue
+
+                # Step 4 — Structured summarisation (Sonnet)
+                sum_result = summarise_article(
+                    content.full_text, content.title, anthropic_client, settings.claude_model_heavy,
+                )
+                sonnet_in += sum_result.input_tokens
+                sonnet_out += sum_result.output_tokens
+
+                # Step 5 — Write to DB
+                article_id = upsert_raw_content(
+                    supabase, content, sum_result.summary, score, source_name=site.site_name,
+                )
+                if article_id:
+                    success_count += 1
+                    trace_entries.append(log_agent_decision(
+                        logger, "store_article", "Stored successfully",
+                        {"id": article_id, "url": link.url, "score": score},
+                    ))
+                else:
+                    failure_count += 1
+
+            record_site_success(supabase, site.id)
+
+        except Exception as exc:
+            logger.error(f"research_agent_task: site error | site={site.site_name} | err={exc}")
+            errors.append({"site": site.site_name, "error": str(exc)})
+            record_site_failure(supabase, site.id, str(exc), settings.site_failure_pause_threshold)
+            failure_count += 1
+
+    duration = time.time() - start_time
+
+    # Build cost breakdown
+    haiku_cost = format_token_cost(haiku_in, haiku_out, settings.claude_model_light)
+    sonnet_cost = format_token_cost(sonnet_in, sonnet_out, settings.claude_model_heavy)
+    total_usd = haiku_cost["estimated_usd"] + sonnet_cost["estimated_usd"]
+    total_tokens = haiku_in + haiku_out + sonnet_in + sonnet_out
+    token_cost_dict = {
+        "haiku": haiku_cost,
+        "sonnet": sonnet_cost,
+        "total_usd": round(total_usd, 6),
+    }
+
+    # Accumulate daily cost
+    upsert_cost_log(supabase, "research_agent", total_usd=total_usd, token_count=total_tokens)
+
+    # Write run_log
+    trigger = TriggerType.CRON if (topic is None and url is None) else TriggerType.MANUAL
+    run_log = RunLogCreate(
+        agent_name="research_agent",
+        trigger_type=trigger,
+        processed_count=processed_count,
+        success_count=success_count,
+        failure_count=failure_count,
+        duration_seconds=round(duration, 2),
+        reasoning_trace="\n".join(trace_entries) if trace_entries else None,
+        errors=errors,
+        token_cost=token_cost_dict,
+    )
+    supabase.table("run_logs").insert(run_log.model_dump()).execute()
+
+    # Cost alert
+    if settings.slack_webhook_url and total_usd >= settings.daily_cost_alert_usd:
+        send_slack_alert(
+            settings.slack_webhook_url,
+            f"Research agent cost alert: ${total_usd:.4f} in this run "
+            f"(threshold: ${settings.daily_cost_alert_usd})",
+        )
+
+    logger.info(
+        f"research_agent_task done | processed={processed_count} "
+        f"success={success_count} failures={failure_count} "
+        f"duration={duration:.1f}s cost=${total_usd:.4f}"
+    )
+    return {
+        "status": "done",
+        "processed": processed_count,
+        "success": success_count,
+        "failures": failure_count,
+        "duration_seconds": round(duration, 2),
+        "cost_usd": round(total_usd, 6),
+    }
 
 
 async def scoring_agent_task(ctx: dict) -> dict:
