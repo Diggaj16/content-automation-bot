@@ -76,6 +76,20 @@ class TestLooksLikeArticle:
             text="Markets section covering all Indian equity and commodity markets",
         )
 
+    def test_rejects_bare_login_no_trailing_slash(self):
+        # /login with no trailing slash should be rejected
+        assert not _looks_like_article(
+            href="/login",
+            text="Login to your account to access premium finance content today",
+        )
+
+    def test_accepts_article_slug_with_trailing_slash(self):
+        # Trailing slash should not prevent article detection
+        assert _looks_like_article(
+            href="/markets/sensex-gains-500-points-on-strong-global-cues/",
+            text="Sensex gains 500 points as global markets rally on Fed pivot hopes",
+        )
+
 
 # ── scrape_homepage ───────────────────────────────────────────────────────────
 

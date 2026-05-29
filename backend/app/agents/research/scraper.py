@@ -19,13 +19,13 @@ logger = get_logger(__name__)
 
 # URL sub-strings that signal navigation / non-article pages — skip them
 _SKIP_URL_RE = re.compile(
-    r"/(page|tag|author|category|search|login|subscribe|newsletters?)/",
+    r"/(page|tag|author|category|search|login|subscribe|newsletters?)(/|$)",
     re.IGNORECASE,
 )
 
 # URL sub-strings that strongly suggest an article page
 _ARTICLE_URL_RE = re.compile(
-    r"(/\d{4}/\d{2}/|/article|/story|/news/|[a-z0-9-]{20,}$)",
+    r"(/\d{4}/\d{2}/|/article|/story|/news/|[a-z0-9-]{20,}/?$)",
     re.IGNORECASE,
 )
 
