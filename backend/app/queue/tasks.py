@@ -532,8 +532,117 @@ async def publishing_agent_task(ctx: dict) -> dict:
     Publishing agent — posts approved drafts that are due.
     Triggered: every 15 minutes by cron.
     """
-    logger.info("publishing_agent_task called")
-    return {"status": "stub", "agent": "publishing"}
+    import time
+    from datetime import datetime, timezone, timedelta
+    from app.agents.publishing.poster import post_to_platform
+    from app.agents.publishing.db_writer import write_published_post, update_draft_published
+    from app.utils.logging import log_agent_decision
+    from app.db.models import Draft, RunLogCreate, TriggerType
+
+    settings = ctx["settings"]
+    supabase = ctx["supabase"]
+    arq_pool = ctx.get("redis")   # arq injects "redis" key into task ctx
+    start_time = time.time()
+
+    processed_count = 0
+    published_count = 0
+    failure_count = 0
+    errors: list[dict] = []
+    trace_entries: list[str] = []
+
+    now = datetime.now(timezone.utc)
+
+    try:
+        resp = (
+            supabase.table("drafts")
+            .select("*")
+            .eq("approval_status", "approved")
+            .lte("scheduled_at", now.isoformat())
+            .execute()
+        )
+        drafts = [Draft(**d) for d in (resp.data or [])]
+    except Exception as exc:
+        logger.error(f"publishing_agent_task: failed to fetch drafts | err={exc}")
+        return {
+            "status": "error",
+            "processed": 0,
+            "published": 0,
+            "failures": 0,
+            "duration_seconds": round(time.time() - start_time, 2),
+            "error": str(exc),
+        }
+
+    for draft in drafts:
+        processed_count += 1
+        try:
+            # Step 1 — Post to platform
+            post_identifier = post_to_platform(draft.platform.value, draft.content_text, settings)
+            if post_identifier is None:
+                failure_count += 1
+                errors.append({"draft_id": str(draft.id), "error": "post_to_platform returned None"})
+                continue
+
+            # Step 2 — Record in published_posts
+            post_id = write_published_post(supabase, draft.platform.value, post_identifier, draft.id)
+            if post_id is None:
+                failure_count += 1
+                errors.append({"draft_id": str(draft.id), "error": "write_published_post failed"})
+                continue
+
+            # Step 3 — Update draft status to published
+            update_draft_published(supabase, draft.id)
+
+            # Step 4 — Schedule analytics jobs (24h, 72h, 7d)
+            if arq_pool is not None:
+                for period, hours in [("24h", 24), ("72h", 72), ("7d", 168)]:
+                    await arq_pool.enqueue_job(
+                        "analytics_agent_task",
+                        post_id=post_id,
+                        measurement_period=period,
+                        _defer_by=timedelta(hours=hours),
+                    )
+
+            published_count += 1
+            trace_entries.append(log_agent_decision(
+                logger, "draft_published", "Published and analytics scheduled",
+                {"draft_id": str(draft.id), "platform": draft.platform.value, "post_id": post_id},
+            ))
+
+        except Exception as exc:
+            logger.error(f"publishing_agent_task: draft error | id={draft.id} | err={exc}")
+            errors.append({"draft_id": str(draft.id), "error": str(exc)})
+            failure_count += 1
+
+    duration = time.time() - start_time
+
+    run_log = RunLogCreate(
+        agent_name="publishing_agent",
+        trigger_type=TriggerType.CRON,
+        processed_count=processed_count,
+        success_count=published_count,
+        failure_count=failure_count,
+        duration_seconds=round(duration, 2),
+        reasoning_trace="\n".join(trace_entries) if trace_entries else None,
+        errors=errors,
+        token_cost={"total_usd": 0.0},
+    )
+    try:
+        supabase.table("run_logs").insert(run_log.model_dump()).execute()
+    except Exception as exc:
+        logger.error(f"publishing_agent_task: failed to write run_log | err={exc}")
+
+    logger.info(
+        f"publishing_agent_task done | processed={processed_count} "
+        f"published={published_count} failures={failure_count} "
+        f"duration={duration:.1f}s"
+    )
+    return {
+        "status": "done",
+        "processed": processed_count,
+        "published": published_count,
+        "failures": failure_count,
+        "duration_seconds": round(duration, 2),
+    }
 
 
 async def analytics_agent_task(
