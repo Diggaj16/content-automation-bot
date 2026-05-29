@@ -151,19 +151,19 @@ INITIAL_TOPIC_CATEGORIES = [
 
 
 def seed_curated_sites(db) -> None:
-    print("\n→ Seeding curated_sites...")
+    print("\n-> Seeding curated_sites...")
     for site in INITIAL_SITES:
         try:
             db.table("curated_sites").upsert(
                 site, on_conflict="section_url"
             ).execute()
-            print(f"  ✓ {site['site_name']} (threshold: {site['pre_score_threshold']})")
+            print(f"  OK {site['site_name']} (threshold: {site['pre_score_threshold']})")
         except Exception as e:
-            print(f"  ✗ {site['site_name']}: {e}")
+            print(f"  FAIL {site['site_name']}: {e}")
 
 
 def seed_brand_memory(db) -> None:
-    print("\n→ Seeding brand_memory (no embeddings yet — added in Plan 4)...")
+    print("\n-> Seeding brand_memory (no embeddings yet - added in Plan 4)...")
     for sample in BRAND_VOICE_SAMPLES:
         try:
             existing = (
@@ -176,34 +176,34 @@ def seed_brand_memory(db) -> None:
                 print(f"  - Already exists: {sample['content'][:60]}...")
                 continue
             db.table("brand_memory").insert(sample).execute()
-            print(f"  ✓ {sample['content'][:60]}...")
+            print(f"  OK {sample['content'][:60]}...")
         except Exception as e:
-            print(f"  ✗ Failed: {e}")
+            print(f"  FAIL Failed: {e}")
 
 
 def seed_style_guide(db) -> None:
-    print("\n→ Seeding style_guide (empty baseline)...")
+    print("\n-> Seeding style_guide (empty baseline)...")
     for row in INITIAL_STYLE_GUIDE:
         try:
             db.table("style_guide").upsert(
                 row, on_conflict="platform"
             ).execute()
-            print(f"  ✓ {row['platform']}")
+            print(f"  OK {row['platform']}")
         except Exception as e:
-            print(f"  ✗ {row['platform']}: {e}")
+            print(f"  FAIL {row['platform']}: {e}")
 
 
 def seed_topic_performance_model(db) -> None:
-    print("\n→ Seeding topic_performance_model (default 0.5 scores)...")
+    print("\n-> Seeding topic_performance_model (default 0.5 scores)...")
     for category in INITIAL_TOPIC_CATEGORIES:
         try:
             db.table("topic_performance_model").upsert(
                 {"topic_category": category, "performance_score": 0.5, "sample_count": 0},
                 on_conflict="topic_category",
             ).execute()
-            print(f"  ✓ {category}")
+            print(f"  OK {category}")
         except Exception as e:
-            print(f"  ✗ {category}: {e}")
+            print(f"  FAIL {category}: {e}")
 
 
 def main() -> None:
@@ -213,10 +213,10 @@ def main() -> None:
     seed_brand_memory(db)
     seed_style_guide(db)
     seed_topic_performance_model(db)
-    print("\n✓ Seed complete.")
+    print("\nSeed complete.")
     print("\nNOTE: brand_memory rows have no embeddings.")
     print("After setting VOYAGE_API_KEY, run: python scripts/embed_brand_memory.py")
-    print("(Written in Plan 4 — Orchestrator + Knowledge Base)")
+    print("(Written in Plan 4 - Orchestrator + Knowledge Base)")
 
 
 if __name__ == "__main__":
