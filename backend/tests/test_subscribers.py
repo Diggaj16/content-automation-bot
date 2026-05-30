@@ -1,6 +1,5 @@
 """Tests for subscriber CRUD and token-based unsubscribe."""
 from unittest.mock import MagicMock
-import pytest
 from fastapi.testclient import TestClient
 
 
@@ -67,10 +66,10 @@ def test_add_subscriber_duplicate_returns_409():
 def test_update_subscriber_toggles_active():
     sb = MagicMock()
     sb.table.return_value.update.return_value.eq.return_value.execute.return_value.data = [
-        {"id": "ccc", "active": False}
+        {"id": "cccccccc-cccc-cccc-cccc-cccccccccccc", "active": False}
     ]
     client = _make_app(sb)
-    r = client.patch("/subscribers/ccc", json={"active": False})
+    r = client.patch("/subscribers/cccccccc-cccc-cccc-cccc-cccccccccccc", json={"active": False})
     assert r.status_code == 200
     assert r.json()["active"] is False
 
@@ -79,7 +78,7 @@ def test_update_subscriber_not_found_returns_404():
     sb = MagicMock()
     sb.table.return_value.update.return_value.eq.return_value.execute.return_value.data = []
     client = _make_app(sb)
-    r = client.patch("/subscribers/missing-id", json={"active": False})
+    r = client.patch("/subscribers/dddddddd-dddd-dddd-dddd-dddddddddddd", json={"active": False})
     assert r.status_code == 404
 
 
@@ -88,10 +87,10 @@ def test_update_subscriber_not_found_returns_404():
 def test_delete_subscriber_soft_deletes():
     sb = MagicMock()
     sb.table.return_value.update.return_value.eq.return_value.execute.return_value.data = [
-        {"id": "ddd", "active": False}
+        {"id": "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee", "active": False}
     ]
     client = _make_app(sb)
-    r = client.delete("/subscribers/ddd")
+    r = client.delete("/subscribers/eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")
     assert r.status_code == 200
     call_args = sb.table.return_value.update.call_args[0][0]
     assert call_args["active"] is False
