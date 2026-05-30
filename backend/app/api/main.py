@@ -66,6 +66,12 @@ def create_app() -> FastAPI:
     from app.api.routers.triggers import router as triggers_router
     _app.include_router(triggers_router)
 
+    from app.api.routers.tables import router as tables_router
+    _app.include_router(tables_router)
+
+    from app.api.routers.subscribers import router as subscribers_router
+    _app.include_router(subscribers_router)
+
     return _app
 
 
