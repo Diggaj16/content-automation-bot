@@ -44,7 +44,7 @@ def count_unsummarized_rejections(supabase: Client) -> tuple[int, Optional[datet
         resp = query.execute()
         return (resp.count or 0), since_ts
     except Exception as exc:
-        logger.warning(f"count_unsummarized_rejections failed | err={exc}")
+        logger.warning("count_unsummarized_rejections failed", extra={"error": str(exc)})
         return 0, None
 
 
@@ -67,7 +67,7 @@ def fetch_recent_rejections(
         resp = query.execute()
         return resp.data or []
     except Exception as exc:
-        logger.warning(f"fetch_recent_rejections failed | err={exc}")
+        logger.warning("fetch_recent_rejections failed", extra={"error": str(exc)})
         return []
 
 
@@ -110,7 +110,7 @@ def generate_decision_summary(
         )
         return message.content[0].text.strip() if message.content else ""
     except Exception as exc:
-        logger.warning(f"generate_decision_summary: Claude call failed | err={exc}")
+        logger.warning("generate_decision_summary: Claude call failed", extra={"error": str(exc)})
         return ""
 
 
@@ -124,4 +124,4 @@ def write_summary(supabase: Client, summary_text: str, rejection_count: int) -> 
             "rejection_count": rejection_count,
         }).execute()
     except Exception as exc:
-        logger.warning(f"write_summary failed | err={exc}")
+        logger.warning("write_summary failed", extra={"error": str(exc)})

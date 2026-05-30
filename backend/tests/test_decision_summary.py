@@ -88,11 +88,34 @@ def test_fetch_recent_rejections_empty_on_exception():
     assert result == []
 
 
+def test_fetch_recent_rejections_with_since_ts():
+    """When since_ts is provided, the gt filter is applied to updated_at."""
+    sb = MagicMock()
+    ideas = [{"angle": "Post after cutoff", "platform": "linkedin", "agent_reasoning": "x"}]
+    # Chain: .select().eq().order().limit().gt().execute()
+    (
+        sb.table.return_value.select.return_value
+        .eq.return_value
+        .order.return_value
+        .limit.return_value
+        .gt.return_value
+        .execute.return_value.data
+    ) = ideas
+
+    from app.agents.scoring.decision_summary import fetch_recent_rejections
+    since = datetime(2026, 5, 30, 10, 0, 0, tzinfo=timezone.utc)
+    result = fetch_recent_rejections(sb, since, 10)
+    assert len(result) == 1
+    # Verify .gt() was called with the right column
+    sb.table.return_value.select.return_value.eq.return_value.order.return_value.limit.return_value.gt.assert_called_once_with(
+        "updated_at", since.isoformat()
+    )
+
+
 # ── generate_decision_summary ────────────────────────────────────
 
 def test_generate_summary_calls_claude():
     """Calls Claude Haiku and returns the text content."""
-    from unittest.mock import MagicMock, patch
     client = MagicMock()
     msg = MagicMock()
     msg.content = [MagicMock(text="Too many generic EMI explainers rejected. Twitter ideas without hooks rejected.")]
