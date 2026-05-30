@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { getIdeas, approveIdea, type Idea } from "../lib/api";
+import { getIdeas, approveIdea, triggerCreation, type Idea } from "../lib/api";
 
 const platformColors: Record<string, string> = {
   linkedin: "bg-blue-100 text-blue-700",
@@ -22,9 +22,11 @@ function PlatformBadge({ platform }: { platform: string }) {
 function IdeaCard({
   idea,
   onAction,
+  onApproved,
 }: {
   idea: Idea;
   onAction: (id: string) => void;
+  onApproved: (id: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [approving, setApproving] = useState(false);
@@ -40,6 +42,7 @@ function IdeaCard({
         approval_status: "approved",
         edited_angle: editedAngle !== idea.angle ? editedAngle : undefined,
       });
+      onApproved(idea.id);
       onAction(idea.id);
     } catch (e: unknown) {
       setLocalError(e instanceof Error ? e.message : "Failed to approve");
@@ -161,6 +164,9 @@ export default function IdeasPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [approvedIds, setApprovedIds] = useState<string[]>([]);
+  const [creationMsg, setCreationMsg] = useState<string | null>(null);
+  const [sendingToCreation, setSendingToCreation] = useState(false);
 
   const fetchIdeas = async () => {
     setLoading(true);
@@ -226,9 +232,36 @@ export default function IdeasPage() {
 
       <div className="grid gap-4">
         {ideas.map((idea) => (
-          <IdeaCard key={idea.id} idea={idea} onAction={handleAction} />
+          <IdeaCard
+            key={idea.id}
+            idea={idea}
+            onAction={handleAction}
+            onApproved={(id) => setApprovedIds((prev) => [...prev, id])}
+          />
         ))}
       </div>
+
+      {approvedIds.length > 0 && (
+        <div className="flex items-center gap-3 mt-4">
+          <button
+            onClick={async () => {
+              setSendingToCreation(true); setCreationMsg(null);
+              try {
+                const r = await triggerCreation(approvedIds);
+                setCreationMsg(`Creation queued for ${r.idea_count} idea(s) — job_id: ${r.job_id ?? "n/a"}`);
+                setApprovedIds([]);
+              } catch (e: unknown) {
+                setCreationMsg(e instanceof Error ? `Error: ${e.message}` : "Failed");
+              } finally { setSendingToCreation(false); }
+            }}
+            disabled={sendingToCreation}
+            className="bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-sm px-4 py-2 rounded"
+          >
+            {sendingToCreation ? "Sending…" : `Send ${approvedIds.length} approved idea(s) to Creation`}
+          </button>
+          {creationMsg && <p className="text-sm text-gray-600">{creationMsg}</p>}
+        </div>
+      )}
     </div>
   );
 }

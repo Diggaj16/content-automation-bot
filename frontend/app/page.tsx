@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import {
   getStatus,
   triggerResearch,
+  triggerScoring,
   type RunLog,
   type CostLog,
 } from "./lib/api";
@@ -16,6 +17,8 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [triggering, setTriggering] = useState(false);
   const [triggerMsg, setTriggerMsg] = useState<string | null>(null);
+  const [triggeringScore, setTriggeringScore] = useState(false);
+  const [triggerScoreMsg, setTriggerScoreMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const fetchStatus = async () => {
@@ -49,6 +52,16 @@ export default function DashboardPage() {
     }
   };
 
+  const handleTriggerScoring = async () => {
+    setTriggeringScore(true); setTriggerScoreMsg(null);
+    try {
+      const r = await triggerScoring();
+      setTriggerScoreMsg(`Scoring job enqueued — job_id: ${r.job_id ?? "n/a"}`);
+    } catch (e: unknown) {
+      setTriggerScoreMsg(e instanceof Error ? `Error: ${e.message}` : "Failed");
+    } finally { setTriggeringScore(false); }
+  };
+
   return (
     <div className="space-y-8">
       <div className="flex items-center justify-between">
@@ -68,8 +81,24 @@ export default function DashboardPage() {
           >
             {triggering ? "Triggering..." : "Trigger Research"}
           </button>
+          <button onClick={handleTriggerScoring} disabled={triggeringScore}
+            className="bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-sm px-4 py-2 rounded">
+            {triggeringScore ? "Enqueueing…" : "Trigger Scoring"}
+          </button>
         </div>
       </div>
+
+      {triggerScoreMsg && (
+        <div
+          className={`px-4 py-3 rounded-md text-sm ${
+            triggerScoreMsg.startsWith("Error")
+              ? "bg-red-50 text-red-700 border border-red-200"
+              : "bg-green-50 text-green-700 border border-green-200"
+          }`}
+        >
+          {triggerScoreMsg}
+        </div>
+      )}
 
       {triggerMsg && (
         <div

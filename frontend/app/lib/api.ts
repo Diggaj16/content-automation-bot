@@ -57,6 +57,17 @@ export async function triggerResearch() {
   );
 }
 
+export async function triggerScoring() {
+  return apiFetch<{ job_id: string; status: string; agent: string }>("/trigger/scoring", { method: "POST" });
+}
+
+export async function triggerCreation(ideaIds: string[]) {
+  return apiFetch<{ job_id: string; status: string; agent: string; idea_count: number }>(
+    "/trigger/creation",
+    { method: "POST", body: JSON.stringify({ idea_ids: ideaIds }) }
+  );
+}
+
 // Types
 export interface Idea {
   id: string;
