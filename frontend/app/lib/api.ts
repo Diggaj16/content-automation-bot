@@ -1,4 +1,6 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+// Use the Next.js proxy so the browser always calls the same origin.
+// /api/proxy/* is forwarded server-side to the FastAPI backend.
+const API_BASE = "/api/proxy";
 
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
@@ -12,7 +14,7 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json();
 }
 
-export async function getIdeas(status = "pending") {
+export async function getIdeas(status = "pending_approval") {
   return apiFetch<Idea[]>(`/ideas?status=${status}&limit=50`);
 }
 
@@ -26,7 +28,7 @@ export async function approveIdea(
   });
 }
 
-export async function getDrafts(status = "pending") {
+export async function getDrafts(status = "pending_approval") {
   return apiFetch<Draft[]>(`/drafts?status=${status}&limit=50`);
 }
 
@@ -68,7 +70,68 @@ export async function triggerCreation(ideaIds: string[]) {
   );
 }
 
+// --- Subscribers ---
+
+export interface Subscriber {
+  id: string;
+  email: string;
+  name: string | null;
+  subscribed_date: string;
+  source: string;
+  active: boolean;
+  unsubscribe_token: string | null;
+  created_at: string;
+}
+
+export async function getSubscribers(active?: boolean) {
+  const qs = active !== undefined ? `?active=${active}` : "";
+  return apiFetch<Subscriber[]>(`/subscribers${qs}`);
+}
+
+export async function addSubscriber(data: { email: string; name?: string }) {
+  return apiFetch<Subscriber>("/subscribers", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function updateSubscriber(
+  id: string,
+  data: { name?: string; active?: boolean }
+) {
+  return apiFetch<Subscriber>(`/subscribers/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteSubscriber(id: string) {
+  return apiFetch<{ deleted: boolean; id: string }>(`/subscribers/${id}`, {
+    method: "DELETE",
+  });
+}
+
 // Types
+export interface SourceArticle {
+  id: string;
+  url: string;
+  title: string;
+  source_name: string;
+  publication_date: string | null;
+  full_text: string;
+  structured_summary: {
+    story_narrative: string;
+    key_data_points: string[];
+    mechanism: string;
+    implications: string;
+    content_angles: string[];
+  } | null;
+  word_count: number;
+  pre_score: number | null;
+  vision_fallback_used: boolean;
+  paywall_detected: boolean;
+}
+
 export interface Idea {
   id: string;
   platform: string;
@@ -79,6 +142,7 @@ export interface Idea {
   recent_coverage_flag: boolean;
   approval_status: string;
   source_article_date: string | null;
+  source_article: SourceArticle | null;
   created_at: string;
 }
 
@@ -114,6 +178,66 @@ export interface CostLog {
   id: string;
   agent_name: string;
   date: string;
-  total_usd: number;
+  estimated_cost_usd: number;
   token_count: number;
+}
+
+// --- Generic table browser ---
+
+export interface TableListResponse {
+  table: string;
+  rows: Record<string, unknown>[];
+  count: number | null;
+  limit: number;
+  offset: number;
+}
+
+export async function listTables() {
+  return apiFetch<string[]>("/tables");
+}
+
+export async function getTableRows(
+  tableName: string,
+  opts: {
+    limit?: number;
+    offset?: number;
+    orderBy?: string;
+    orderDesc?: boolean;
+    filterColumn?: string;
+    filterValue?: string;
+  } = {}
+) {
+  const params = new URLSearchParams();
+  if (opts.limit) params.set("limit", String(opts.limit));
+  if (opts.offset) params.set("offset", String(opts.offset));
+  if (opts.orderBy) params.set("order_by", opts.orderBy);
+  if (opts.orderDesc !== undefined) params.set("order_desc", String(opts.orderDesc));
+  if (opts.filterColumn) params.set("filter_column", opts.filterColumn);
+  if (opts.filterValue !== undefined) params.set("filter_value", opts.filterValue);
+  const qs = params.toString();
+  return apiFetch<TableListResponse>(`/tables/${tableName}${qs ? `?${qs}` : ""}`);
+}
+
+export async function getTableRow(tableName: string, rowId: string) {
+  return apiFetch<Record<string, unknown>>(`/tables/${tableName}/${rowId}`);
+}
+
+export async function insertTableRow(tableName: string, payload: Record<string, unknown>) {
+  return apiFetch<Record<string, unknown>>(`/tables/${tableName}`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateTableRow(tableName: string, rowId: string, payload: Record<string, unknown>) {
+  return apiFetch<Record<string, unknown>>(`/tables/${tableName}/${rowId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteTableRow(tableName: string, rowId: string) {
+  return apiFetch<{ deleted: boolean; id: string }>(`/tables/${tableName}/${rowId}`, {
+    method: "DELETE",
+  });
 }
