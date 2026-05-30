@@ -657,5 +657,92 @@ async def analytics_agent_task(
         post_id:            UUID of the published_post record.
         measurement_period: "24h", "72h", or "7d"
     """
-    logger.info(f"analytics_agent_task called | post_id={post_id} | period={measurement_period}")
-    return {"status": "stub", "agent": "analytics"}
+    import time
+    from app.agents.analytics.metrics_fetcher import fetch_metrics, calculate_performance_score
+    from app.agents.analytics.db_writer import write_analytics, update_style_guide
+    from app.utils.logging import log_agent_decision
+    from app.db.models import PublishedPost, RunLogCreate, TriggerType
+
+    settings = ctx["settings"]
+    supabase = ctx["supabase"]
+    start_time = time.time()
+
+    # Fetch the published post record
+    try:
+        resp = (
+            supabase.table("published_posts")
+            .select("*")
+            .eq("id", post_id)
+            .execute()
+        )
+        if not resp.data:
+            logger.warning(f"analytics_agent_task: post not found | id={post_id}")
+            return {
+                "status": "error",
+                "post_id": post_id,
+                "measurement_period": measurement_period,
+                "duration_seconds": round(time.time() - start_time, 2),
+                "error": "Post not found",
+            }
+        post = PublishedPost.model_construct(**resp.data[0])
+    except Exception as exc:
+        logger.error(f"analytics_agent_task: failed to fetch post | id={post_id} | err={exc}")
+        return {
+            "status": "error",
+            "post_id": post_id,
+            "measurement_period": measurement_period,
+            "duration_seconds": round(time.time() - start_time, 2),
+            "error": str(exc),
+        }
+
+    # Fetch metrics (stub)
+    metrics = fetch_metrics(post.platform, post.post_identifier, measurement_period)
+
+    # Calculate performance score
+    performance_score = calculate_performance_score(post.platform, metrics)
+
+    # Store analytics
+    analytics_id = write_analytics(
+        supabase, post_id, post.platform, measurement_period, metrics, performance_score
+    )
+
+    # Update style guide only at 7d mark
+    if measurement_period == "7d":
+        update_style_guide(supabase, post.platform, performance_score)
+
+    duration = time.time() - start_time
+
+    run_log = RunLogCreate(
+        agent_name="analytics_agent",
+        trigger_type=TriggerType.EVENT,
+        processed_count=1,
+        success_count=1 if analytics_id else 0,
+        failure_count=0 if analytics_id else 1,
+        duration_seconds=round(duration, 2),
+        reasoning_trace=log_agent_decision(
+            logger, "analytics_stored",
+            f"Metrics recorded for {post.platform} at {measurement_period}",
+            {"post_id": post_id, "period": measurement_period, "score": performance_score},
+        ) if analytics_id else None,
+        errors=[],
+        token_cost={"total_usd": 0.0},
+    )
+    try:
+        supabase.table("run_logs").insert(run_log.model_dump()).execute()
+    except Exception as exc:
+        logger.error(f"analytics_agent_task: failed to write run_log | err={exc}")
+
+    logger.info(
+        f"analytics_agent_task done | post_id={post_id} "
+        f"period={measurement_period} platform={post.platform} "
+        f"score={performance_score} duration={duration:.1f}s"
+    )
+    return {
+        "status": "done",
+        "post_id": post_id,
+        "measurement_period": measurement_period,
+        "platform": post.platform,
+        "performance_score": performance_score,
+        "analytics_id": analytics_id,
+        "duration_seconds": round(duration, 2),
+    }
