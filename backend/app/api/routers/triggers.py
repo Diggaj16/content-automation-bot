@@ -3,14 +3,20 @@ Agent trigger endpoints and system status.
 
 POST /trigger/research  — manually enqueue research_agent_task
 POST /trigger/scoring   — manually enqueue scoring_agent_task
+POST /trigger/creation  — manually enqueue creation_agent_task
 GET  /status            — recent run_logs + daily cost summary
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from supabase import Client
 
 from app.api.deps import get_arq_pool, get_supabase
 
 router = APIRouter(tags=["System"])
+
+
+class CreationTriggerRequest(BaseModel):
+    idea_ids: list[str]
 
 
 @router.post("/trigger/research")
@@ -40,6 +46,27 @@ async def trigger_scoring(pool=Depends(get_arq_pool)) -> dict:
         "job_id": job.job_id if job else None,
         "status": "enqueued",
         "agent": "scoring",
+    }
+
+
+@router.post("/trigger/creation")
+async def trigger_creation(
+    body: CreationTriggerRequest,
+    pool=Depends(get_arq_pool),
+) -> dict:
+    """Manually enqueue the creation agent for the given approved idea IDs."""
+    if pool is None:
+        raise HTTPException(
+            status_code=503, detail="Queue unavailable — Redis not connected"
+        )
+    if not body.idea_ids:
+        raise HTTPException(status_code=422, detail="idea_ids must not be empty")
+    job = await pool.enqueue_job("creation_agent_task", idea_ids=body.idea_ids)
+    return {
+        "job_id": job.job_id if job else None,
+        "status": "enqueued",
+        "agent": "creation",
+        "idea_count": len(body.idea_ids),
     }
 
 

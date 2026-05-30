@@ -201,6 +201,16 @@ async def research_agent_task(
         f"success={success_count} failures={failure_count} "
         f"duration={duration:.1f}s cost=${total_usd:.4f}"
     )
+
+    # Auto-chain to scoring agent
+    arq_pool = ctx.get("redis")
+    if arq_pool is not None:
+        try:
+            await arq_pool.enqueue_job("scoring_agent_task")
+            logger.info("research_agent_task: chained to scoring_agent_task")
+        except Exception as exc:
+            logger.warning(f"research_agent_task: failed to chain scoring | err={exc}")
+
     return {
         "status": "done",
         "processed": processed_count,

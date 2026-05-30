@@ -131,3 +131,22 @@ async def test_research_task_processes_one_site_one_article():
     assert result["status"] == "done"
     assert result["processed"] >= 1
     assert result["success"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_research_task_chains_to_scoring_when_redis_available():
+    """research_agent_task should enqueue scoring_agent_task at the end."""
+    mock_pool = AsyncMock()
+    mock_pool.enqueue_job.return_value = AsyncMock(job_id="job-scoring-001")
+    ctx = _make_ctx()
+    ctx["redis"] = mock_pool  # arq injects redis pool as "redis" key
+
+    # Empty sites list so the task runs quickly
+    ctx["supabase"].table.return_value.select.return_value.eq.return_value.execute.return_value.data = []
+
+    with patch("app.queue.tasks.Anthropic"):
+        from app.queue.tasks import research_agent_task
+        result = await research_agent_task(ctx)
+
+    assert result["status"] == "done"
+    mock_pool.enqueue_job.assert_awaited_once_with("scoring_agent_task")

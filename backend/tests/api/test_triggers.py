@@ -7,6 +7,8 @@ from fastapi.testclient import TestClient
 from app.api.main import app
 from app.api.deps import get_supabase, get_arq_pool
 
+client = TestClient(app, raise_server_exceptions=False)
+
 
 @pytest.fixture(autouse=True)
 def clear_overrides():
@@ -106,3 +108,45 @@ def test_get_status_db_error_returns_500(client_with_pool, mock_sb):
         .limit.return_value.execute.side_effect = RuntimeError("db error")
     resp = client_with_pool.get("/status")
     assert resp.status_code == 500
+
+
+# ─── POST /trigger/creation ────────────────────────────────────────────────────
+
+def test_trigger_creation_enqueues_job():
+    mock_pool = AsyncMock()
+    mock_pool.enqueue_job.return_value = AsyncMock(job_id="job-creation-001")
+    app.dependency_overrides[get_arq_pool] = lambda: mock_pool
+    try:
+        resp = client.post(
+            "/trigger/creation",
+            json={"idea_ids": ["idea-uuid-001", "idea-uuid-002"]},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["agent"] == "creation"
+        assert data["idea_count"] == 2
+        assert data["status"] == "enqueued"
+    finally:
+        app.dependency_overrides.pop(get_arq_pool, None)
+
+
+def test_trigger_creation_returns_503_when_pool_none():
+    app.dependency_overrides[get_arq_pool] = lambda: None
+    try:
+        resp = client.post(
+            "/trigger/creation",
+            json={"idea_ids": ["idea-uuid-001"]},
+        )
+        assert resp.status_code == 503
+    finally:
+        app.dependency_overrides.pop(get_arq_pool, None)
+
+
+def test_trigger_creation_returns_422_when_empty_idea_ids():
+    mock_pool = AsyncMock()
+    app.dependency_overrides[get_arq_pool] = lambda: mock_pool
+    try:
+        resp = client.post("/trigger/creation", json={"idea_ids": []})
+        assert resp.status_code == 422
+    finally:
+        app.dependency_overrides.pop(get_arq_pool, None)
