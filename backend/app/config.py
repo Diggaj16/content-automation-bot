@@ -14,6 +14,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         frozen=True,
+        env_ignore_empty=True,   # empty system env-vars fall through to .env values
     )
 
     # Supabase
@@ -43,6 +44,12 @@ class Settings(BaseSettings):
     article_min_words: int = Field(400, gt=0, alias="ARTICLE_MIN_WORDS") #gt=0
     article_max_age_days: int = Field(7, gt=0, alias="ARTICLE_MAX_AGE_DAYS") #gt=0
     default_pre_score_threshold: float = Field(4.0, alias="DEFAULT_PRE_SCORE_THRESHOLD")
+
+    # Scoring
+    max_ideas_per_site: int = Field(5, gt=0, alias="MAX_IDEAS_PER_SITE")
+
+    # Decision summaries
+    rejection_batch_size: int = Field(5, gt=0, alias="REJECTION_BATCH_SIZE")
 
     # Site health
     site_failure_pause_threshold: int = Field(5,gt=0, alias="SITE_FAILURE_PAUSE_THRESHOLD") #gt=0
