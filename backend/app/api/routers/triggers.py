@@ -17,6 +17,7 @@ router = APIRouter(tags=["System"])
 
 class CreationTriggerRequest(BaseModel):
     idea_ids: list[str]
+    content_type: str = "news_driven"
 
 
 @router.post("/trigger/research")
@@ -61,12 +62,17 @@ async def trigger_creation(
         )
     if not body.idea_ids:
         raise HTTPException(status_code=422, detail="idea_ids must not be empty")
-    job = await pool.enqueue_job("creation_agent_task", idea_ids=body.idea_ids)
+    job = await pool.enqueue_job(
+        "creation_agent_task",
+        idea_ids=body.idea_ids,
+        content_type=body.content_type,
+    )
     return {
         "job_id": job.job_id if job else None,
         "status": "enqueued",
         "agent": "creation",
         "idea_count": len(body.idea_ids),
+        "content_type": body.content_type,
     }
 
 
