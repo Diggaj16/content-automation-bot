@@ -160,7 +160,7 @@ async def fetch_article(
         word_count_threshold=10,      # skip tiny blocks (nav labels, button text, etc.)
         markdown_generator=DefaultMarkdownGenerator(content_filter=_content_filter),
         js_code=_EXPAND_ARTICLE_JS,   # click "read more" buttons + scroll for lazy content
-        delay_before_return_html=1500, # wait 1.5s after JS runs for dynamic content to render
+        delay_before_return_html=500,  # 0.5s is sufficient after scroll+click JS
     )
 
     try:
