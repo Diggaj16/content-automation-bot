@@ -23,6 +23,44 @@ from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+# JavaScript injected before content extraction to expand truncated articles.
+# Clicks "Read more / Show more / Continue reading" buttons (by selector and text),
+# then scrolls the full page to trigger lazy-loaded content.
+_EXPAND_ARTICLE_JS = """
+(async () => {
+    const selectorPatterns = [
+        'button[class*="read-more"]', 'button[class*="readmore"]',
+        'button[class*="show-more"]', 'button[class*="showmore"]',
+        'a[class*="read-more"]',     'a[class*="readmore"]',
+        '.read-more-btn', '.show-more-btn', '.expand-btn',
+        '[data-testid*="read-more"]', '[data-action*="expand"]',
+        '[aria-label*="Read more"]',  '[aria-label*="Show more"]',
+    ];
+    for (const sel of selectorPatterns) {
+        try {
+            document.querySelectorAll(sel).forEach(el => {
+                if (el.offsetParent !== null) el.click();
+            });
+        } catch (_) {}
+    }
+    // Text-based fallback: click visible buttons whose label matches
+    const clickable = [...document.querySelectorAll(
+        'button, a[role="button"], span[role="button"], [class*="btn"]'
+    )];
+    clickable
+        .filter(el => /read\\s*more|show\\s*more|expand|continue\\s*reading/i.test(
+            (el.innerText || el.textContent || '').trim()
+        ))
+        .filter(el => el.offsetParent !== null)
+        .forEach(el => { try { el.click(); } catch (_) {} });
+    // Scroll to trigger lazy-loaded content
+    window.scrollTo(0, document.body.scrollHeight / 2);
+    await new Promise(r => setTimeout(r, 400));
+    window.scrollTo(0, document.body.scrollHeight);
+    await new Promise(r => setTimeout(r, 400));
+})();
+"""
+
 # Query parameter keys that are tracking noise — strip them from canonical URLs
 _TRACKING_PARAMS: frozenset[str] = frozenset({
     "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
@@ -95,8 +133,10 @@ async def fetch_article(
     run_cfg = CrawlerRunConfig(
         cache_mode=CacheMode.BYPASS,
         page_timeout=timeout_ms,
-        word_count_threshold=10,  # skip tiny blocks (nav labels, button text, etc.)
+        word_count_threshold=10,      # skip tiny blocks (nav labels, button text, etc.)
         markdown_generator=DefaultMarkdownGenerator(content_filter=_content_filter),
+        js_code=_EXPAND_ARTICLE_JS,   # click "read more" buttons + scroll for lazy content
+        delay_before_return_html=1500, # wait 1.5s after JS runs for dynamic content to render
     )
 
     try:
