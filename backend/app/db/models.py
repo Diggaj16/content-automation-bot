@@ -46,6 +46,12 @@ class TriggerType(str, Enum):
     ORCHESTRATOR = "orchestrator"
 
 
+class ContentType(str, Enum):
+    NEWS_DRIVEN = "news_driven"
+    KB_DRIVEN   = "kb_driven"
+    COMBINED    = "combined"
+
+
 class MeasurementPeriod(str, Enum):
     H24 = "24h"
     H72 = "72h"
