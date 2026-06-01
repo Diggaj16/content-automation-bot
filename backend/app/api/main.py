@@ -72,6 +72,9 @@ def create_app() -> FastAPI:
     from app.api.routers.subscribers import router as subscribers_router
     _app.include_router(subscribers_router)
 
+    from app.api.routers.knowledge_base import router as kb_router
+    _app.include_router(kb_router)
+
     return _app
 
 
