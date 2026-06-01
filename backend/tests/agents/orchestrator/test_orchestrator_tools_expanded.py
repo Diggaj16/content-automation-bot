@@ -91,3 +91,40 @@ async def test_send_ideas_to_creation_requires_arq():
     # arq_pool is None → should return an error string, not raise
     assert isinstance(result, str)
     assert "Error" in result or "unavailable" in result.lower()
+
+
+# ── Drafts ────────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_get_drafts_returns_string():
+    sb = _make_sb()
+    sb.table.return_value.select.return_value.eq.return_value.order.return_value.limit.return_value.execute.return_value.data = [
+        {"id": "d-1", "platform": "linkedin", "content_text": "Draft post text here.",
+         "approval_status": "pending_approval", "created_at": "2026-06-01T10:00:00+00:00",
+         "finance_flags": []}
+    ]
+    tools = make_tools(supabase=sb, arq_pool=None)
+    tool = next(t for t in tools if t.name == "get_drafts")
+    result = await tool.ainvoke({"status": "pending_approval"})
+    assert "linkedin" in result
+    assert "Draft post" in result
+
+
+@pytest.mark.asyncio
+async def test_approve_draft_updates_status():
+    sb = _make_sb()
+    sb.table.return_value.update.return_value.eq.return_value.execute.return_value.data = [{"id": "d-1"}]
+    tools = make_tools(supabase=sb, arq_pool=None)
+    tool = next(t for t in tools if t.name == "approve_draft")
+    result = await tool.ainvoke({"draft_id": "d-1"})
+    assert "approved" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_reject_draft_updates_status():
+    sb = _make_sb()
+    sb.table.return_value.update.return_value.eq.return_value.execute.return_value.data = [{"id": "d-1"}]
+    tools = make_tools(supabase=sb, arq_pool=None)
+    tool = next(t for t in tools if t.name == "reject_draft")
+    result = await tool.ainvoke({"draft_id": "d-1"})
+    assert "rejected" in result.lower()

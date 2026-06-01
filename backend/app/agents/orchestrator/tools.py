@@ -19,7 +19,7 @@ logger = get_logger(__name__)
 
 
 def make_tools(supabase: Client, arq_pool) -> list:
-    """Build and return all 16 orchestrator tool callables."""
+    """Build and return all 19 orchestrator tool callables."""
 
     @tool
     async def trigger_research(topic: Optional[str] = None) -> str:
@@ -404,22 +404,99 @@ def make_tools(supabase: Client, arq_pool) -> list:
             logger.warning("send_ideas_to_creation failed", extra={"error": str(exc)})
             return f"Error triggering creation: {exc}"
 
+    # ── Drafts (Gate 2) ─────────────────────────────────────────────────────
+
+    @tool
+    async def get_drafts(
+        status: str = "pending_approval",
+        platform: Optional[str] = None,
+        limit: int = 10,
+    ) -> str:
+        """Browse content drafts. status: 'pending_approval', 'approved', or 'rejected'.
+        Shows platform, preview of content, finance flags, and date."""
+        try:
+            query = (
+                supabase.table("drafts")
+                .select("id, platform, content_text, finance_flags, approval_status, created_at")
+                .eq("approval_status", status)
+                .order("created_at", desc=True)
+                .limit(limit)
+            )
+            if platform:
+                query = query.eq("platform", platform)
+            resp = query.execute()
+            drafts = resp.data or []
+            if not drafts:
+                return f"No {status.replace('_', ' ')} drafts found."
+            lines = []
+            for d in drafts:
+                preview = (d.get("content_text") or "")[:120].replace("\n", " ")
+                flags = d.get("finance_flags") or []
+                flag_str = f" ⚠ {len(flags)} flag(s)" if flags else ""
+                lines.append(
+                    f"[{d['platform']}]{flag_str} | {preview}…\n  id: {d['id']}"
+                )
+            return f"{len(drafts)} {status.replace('_', ' ')} draft(s):\n" + "\n".join(lines)
+        except Exception as exc:
+            logger.warning("get_drafts failed", extra={"error": str(exc)})
+            return f"Error fetching drafts: {exc}"
+
+    @tool
+    async def approve_draft(draft_id: str, scheduled_at: Optional[str] = None) -> str:
+        """Approve a Gate 2 draft for publishing.
+        draft_id: UUID from get_drafts output.
+        scheduled_at: optional ISO datetime string (e.g. '2026-06-02T09:00:00+05:30')."""
+        try:
+            payload: dict = {"approval_status": "approved"}
+            if scheduled_at:
+                payload["scheduled_at"] = scheduled_at
+            resp = supabase.table("drafts").update(payload).eq("id", draft_id).execute()
+            if not resp.data:
+                return f"Draft {draft_id!r} not found."
+            sched = f" (scheduled: {scheduled_at})" if scheduled_at else ""
+            return f"✓ Approved draft {draft_id[:8]}…{sched}"
+        except Exception as exc:
+            logger.warning("approve_draft failed", extra={"draft_id": draft_id, "error": str(exc)})
+            return f"Error approving draft: {exc}"
+
+    @tool
+    async def reject_draft(draft_id: str) -> str:
+        """Reject a Gate 2 draft.
+        draft_id: UUID from get_drafts output."""
+        try:
+            resp = supabase.table("drafts").update({"approval_status": "rejected"}).eq("id", draft_id).execute()
+            if not resp.data:
+                return f"Draft {draft_id!r} not found."
+            return f"✓ Rejected draft {draft_id[:8]}…"
+        except Exception as exc:
+            logger.warning("reject_draft failed", extra={"draft_id": draft_id, "error": str(exc)})
+            return f"Error rejecting draft: {exc}"
+
     return [
+        # Pipeline triggers
         trigger_research,
         trigger_scoring,
         trigger_creation,
-        get_pending_ideas,
-        get_analytics_summary,
-        add_curated_site,
-        remove_curated_site,
-        list_curated_sites,
-        get_topic_performance,
-        get_run_logs,
-        login_to_site,
         # Ideas (Gate 1)
         get_ideas,
         approve_idea,
         reject_idea,
         bulk_reject_ideas,
         send_ideas_to_creation,
+        # Drafts (Gate 2)
+        get_drafts,
+        approve_draft,
+        reject_draft,
+        # Analytics & browsing
+        get_analytics_summary,
+        get_topic_performance,
+        get_run_logs,
+        # Site management
+        add_curated_site,
+        remove_curated_site,
+        list_curated_sites,
+        # Auth
+        login_to_site,
+        # Legacy
+        get_pending_ideas,
     ]
