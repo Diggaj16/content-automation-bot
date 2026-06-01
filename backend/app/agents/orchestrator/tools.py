@@ -19,7 +19,7 @@ logger = get_logger(__name__)
 
 
 def make_tools(supabase: Client, arq_pool) -> list:
-    """Build and return all 19 orchestrator tool callables."""
+    """Build and return all orchestrator tool callables."""
 
     @tool
     async def trigger_research(topic: Optional[str] = None) -> str:
@@ -472,29 +472,228 @@ def make_tools(supabase: Client, arq_pool) -> list:
             logger.warning("reject_draft failed", extra={"draft_id": draft_id, "error": str(exc)})
             return f"Error rejecting draft: {exc}"
 
+    # ── Brand memory ─────────────────────────────────────────────────────────
+
+    @tool
+    async def add_brand_memory(content: str, platform: str) -> str:
+        """Save a piece of brand content (e.g. a LinkedIn post you wrote) as a style reference.
+        The creation agent will use these examples to match your brand voice when generating new posts.
+        platform: 'linkedin', 'twitter', 'blog', or 'email'."""
+        try:
+            resp = supabase.table("brand_memory").insert({
+                "content": content,
+                "platform": platform,
+                "performance_metrics": {},
+            }).execute()
+            if resp.data:
+                return f"Saved to brand memory for {platform} (id={resp.data[0].get('id', '?')[:8]}...)"
+            return f"Saved to brand memory for {platform}."
+        except Exception as exc:
+            logger.warning("add_brand_memory failed", extra={"error": str(exc)})
+            return f"Error adding brand memory: {exc}"
+
+    @tool
+    async def list_brand_memory(platform: Optional[str] = None, limit: int = 5) -> str:
+        """List recent brand memory posts used as style reference by the creation agent.
+        Optionally filter by platform."""
+        try:
+            query = (
+                supabase.table("brand_memory")
+                .select("id, platform, content, created_at")
+                .order("created_at", desc=True)
+                .limit(limit)
+            )
+            if platform:
+                query = query.eq("platform", platform)
+            resp = query.execute()
+            rows = resp.data or []
+            if not rows:
+                return "No brand memory entries found."
+            lines = [
+                f"[{r['platform']}] {(r.get('content') or '')[:100]}...\n  id: {r['id']}"
+                for r in rows
+            ]
+            return f"{len(rows)} brand memory entry(ies):\n" + "\n".join(lines)
+        except Exception as exc:
+            logger.warning("list_brand_memory failed", extra={"error": str(exc)})
+            return f"Error listing brand memory: {exc}"
+
+    # ── Email subscribers ─────────────────────────────────────────────────────
+
+    @tool
+    async def list_subscribers(limit: int = 10) -> str:
+        """List active email subscribers."""
+        try:
+            resp = (
+                supabase.table("email_subscribers")
+                .select("id, email, name, created_at")
+                .eq("active", True)
+                .order("created_at", desc=True)
+                .limit(limit)
+                .execute()
+            )
+            rows = resp.data or []
+            if not rows:
+                return "No active subscribers found."
+            lines = [
+                f"{r.get('name') or '—'} <{r['email']}>"
+                for r in rows
+            ]
+            return f"{len(rows)} active subscriber(s):\n" + "\n".join(lines)
+        except Exception as exc:
+            logger.warning("list_subscribers failed", extra={"error": str(exc)})
+            return f"Error listing subscribers: {exc}"
+
+    @tool
+    async def add_email_subscriber(email: str, name: Optional[str] = None) -> str:
+        """Add a new email subscriber.
+        email: valid email address. name: optional display name."""
+        import uuid as _uuid
+        try:
+            resp = supabase.table("email_subscribers").insert({
+                "email": email,
+                "name": name or None,
+                "active": True,
+                "unsubscribe_token": str(_uuid.uuid4()),
+            }).execute()
+            if resp.data:
+                return f"Added subscriber: {email}"
+            return f"Added subscriber: {email}"
+        except Exception as exc:
+            logger.warning("add_email_subscriber failed", extra={"email": email, "error": str(exc)})
+            return f"Error adding subscriber: {exc}"
+
+    @tool
+    async def remove_email_subscriber(email: str) -> str:
+        """Deactivate (soft-delete) an email subscriber by email address."""
+        try:
+            resp = (
+                supabase.table("email_subscribers")
+                .update({"active": False})
+                .eq("email", email)
+                .execute()
+            )
+            if not resp.data:
+                return f"No subscriber found with email {email!r}."
+            return f"Removed subscriber: {email}"
+        except Exception as exc:
+            logger.warning("remove_email_subscriber failed", extra={"email": email, "error": str(exc)})
+            return f"Error removing subscriber: {exc}"
+
+    # ── Content browsing ──────────────────────────────────────────────────────
+
+    @tool
+    async def get_decision_summaries(limit: int = 5) -> str:
+        """Show recent rejection pattern summaries — AI-generated analyses of why ideas were rejected.
+        Useful for understanding what content to avoid."""
+        try:
+            resp = (
+                supabase.table("user_decision_summaries")
+                .select("summary_text, rejection_count, created_at")
+                .order("created_at", desc=True)
+                .limit(limit)
+                .execute()
+            )
+            rows = resp.data or []
+            if not rows:
+                return "No decision summaries yet."
+            lines = [
+                f"[{r['created_at'][:10]}] ({r['rejection_count']} rejections)\n{r['summary_text']}"
+                for r in rows
+            ]
+            return "\n\n".join(lines)
+        except Exception as exc:
+            logger.warning("get_decision_summaries failed", extra={"error": str(exc)})
+            return f"Error fetching decision summaries: {exc}"
+
+    @tool
+    async def get_recent_articles(limit: int = 5, source_name: Optional[str] = None) -> str:
+        """Browse recently scraped articles from the research pipeline.
+        Optionally filter by source_name (e.g. 'ET Markets', 'LiveMint')."""
+        try:
+            query = (
+                supabase.table("raw_content")
+                .select("id, title, source_name, pre_score, word_count, created_at, url")
+                .order("created_at", desc=True)
+                .limit(limit)
+            )
+            if source_name:
+                query = query.eq("source_name", source_name)
+            resp = query.execute()
+            rows = resp.data or []
+            if not rows:
+                return "No articles found."
+            lines = [
+                f"[{r['source_name']}] score={r.get('pre_score', '?')} | {r['title']}\n  {r['url'][:80]}"
+                for r in rows
+            ]
+            return f"{len(rows)} article(s):\n" + "\n".join(lines)
+        except Exception as exc:
+            logger.warning("get_recent_articles failed", extra={"error": str(exc)})
+            return f"Error fetching articles: {exc}"
+
+    @tool
+    async def get_published_posts(platform: Optional[str] = None, limit: int = 5) -> str:
+        """Show recently published posts. Optionally filter by platform."""
+        try:
+            query = (
+                supabase.table("published_posts")
+                .select("id, platform, published_at, content_preview")
+                .order("published_at", desc=True)
+                .limit(limit)
+            )
+            if platform:
+                query = query.eq("platform", platform)
+            resp = query.execute()
+            rows = resp.data or []
+            if not rows:
+                return "No published posts found."
+            lines = [
+                f"[{r['platform']}] {(r.get('published_at') or '')[:10]} | {(r.get('content_preview') or '')[:80]}..."
+                for r in rows
+            ]
+            return f"{len(rows)} published post(s):\n" + "\n".join(lines)
+        except Exception as exc:
+            logger.warning("get_published_posts failed", extra={"error": str(exc)})
+            return f"Error fetching published posts: {exc}"
+
+    @tool
+    async def list_kb_files() -> str:
+        """List knowledge base files that have been uploaded and chunked for retrieval."""
+        try:
+            resp = (
+                supabase.table("knowledge_base")
+                .select("source_file, chunk_index, created_at")
+                .order("source_file")
+                .execute()
+            )
+            rows = resp.data or []
+            if not rows:
+                return "No knowledge base files uploaded."
+            files: dict[str, int] = {}
+            for r in rows:
+                files[r["source_file"]] = files.get(r["source_file"], 0) + 1
+            lines = [f"{fname} ({count} chunks)" for fname, count in files.items()]
+            return f"{len(files)} KB file(s):\n" + "\n".join(lines)
+        except Exception as exc:
+            logger.warning("list_kb_files failed", extra={"error": str(exc)})
+            return f"Error listing KB files: {exc}"
+
     return [
         # Pipeline triggers
-        trigger_research,
-        trigger_scoring,
-        trigger_creation,
+        trigger_research, trigger_scoring, trigger_creation,
         # Ideas (Gate 1)
-        get_ideas,
-        approve_idea,
-        reject_idea,
-        bulk_reject_ideas,
-        send_ideas_to_creation,
+        get_ideas, approve_idea, reject_idea, bulk_reject_ideas, send_ideas_to_creation,
         # Drafts (Gate 2)
-        get_drafts,
-        approve_draft,
-        reject_draft,
+        get_drafts, approve_draft, reject_draft,
+        # Brand & subscribers
+        add_brand_memory, list_brand_memory,
+        list_subscribers, add_email_subscriber, remove_email_subscriber,
         # Analytics & browsing
-        get_analytics_summary,
-        get_topic_performance,
-        get_run_logs,
+        get_analytics_summary, get_topic_performance, get_run_logs,
+        get_decision_summaries, get_recent_articles, get_published_posts, list_kb_files,
         # Site management
-        add_curated_site,
-        remove_curated_site,
-        list_curated_sites,
+        add_curated_site, remove_curated_site, list_curated_sites,
         # Auth
         login_to_site,
         # Legacy

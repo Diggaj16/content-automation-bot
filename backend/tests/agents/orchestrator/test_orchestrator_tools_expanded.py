@@ -128,3 +128,50 @@ async def test_reject_draft_updates_status():
     tool = next(t for t in tools if t.name == "reject_draft")
     result = await tool.ainvoke({"draft_id": "d-1"})
     assert "rejected" in result.lower()
+
+
+# ── Brand memory ──────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_add_brand_memory_inserts_row():
+    sb = _make_sb()
+    sb.table.return_value.insert.return_value.execute.return_value.data = [{"id": "bm-1"}]
+    tools = make_tools(supabase=sb, arq_pool=None)
+    tool = next(t for t in tools if t.name == "add_brand_memory")
+    result = await tool.ainvoke({"content": "Great LinkedIn post about GST.", "platform": "linkedin"})
+    assert "saved" in result.lower() or "added" in result.lower()
+    sb.table.assert_any_call("brand_memory")
+
+
+@pytest.mark.asyncio
+async def test_list_brand_memory_returns_string():
+    sb = _make_sb()
+    sb.table.return_value.select.return_value.order.return_value.limit.return_value.execute.return_value.data = [
+        {"id": "bm-1", "platform": "linkedin", "content": "Post about mutual funds.", "created_at": "2026-06-01T10:00:00+00:00"}
+    ]
+    tools = make_tools(supabase=sb, arq_pool=None)
+    tool = next(t for t in tools if t.name == "list_brand_memory")
+    result = await tool.ainvoke({})
+    assert "mutual funds" in result.lower()
+
+
+# ── Subscribers ───────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_add_email_subscriber_inserts():
+    sb = _make_sb()
+    sb.table.return_value.insert.return_value.execute.return_value.data = [{"id": "sub-1"}]
+    tools = make_tools(supabase=sb, arq_pool=None)
+    tool = next(t for t in tools if t.name == "add_email_subscriber")
+    result = await tool.ainvoke({"email": "test@example.com"})
+    assert "added" in result.lower() or "subscribed" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_remove_email_subscriber_deactivates():
+    sb = _make_sb()
+    sb.table.return_value.update.return_value.eq.return_value.execute.return_value.data = [{"id": "sub-1"}]
+    tools = make_tools(supabase=sb, arq_pool=None)
+    tool = next(t for t in tools if t.name == "remove_email_subscriber")
+    result = await tool.ainvoke({"email": "test@example.com"})
+    assert "removed" in result.lower() or "deactivated" in result.lower()
