@@ -271,8 +271,21 @@ async def scoring_agent_task(ctx: dict) -> dict:
 
     logger.info(f"scoring_agent_task: {len(articles)} unprocessed articles")
 
+    max_ideas_per_site = settings.max_ideas_per_site
+    site_idea_counts: dict[str, int] = {}
+
     for article in articles:
         processed_count += 1
+
+        site_key = article.source_name
+        if site_idea_counts.get(site_key, 0) >= max_ideas_per_site:
+            trace_entries.append(log_agent_decision(
+                logger, "skip_site_cap", f"Site '{site_key}' already has {max_ideas_per_site} ideas this run",
+                {"article_id": str(article.id), "title": article.title},
+            ))
+            mark_article_processed(supabase, article.id)
+            continue
+
         try:
             embedding: list[float] = []
             if voyage_client is not None:
@@ -294,8 +307,11 @@ async def scoring_agent_task(ctx: dict) -> dict:
                 mark_article_processed(supabase, article.id)
                 continue
 
+            remaining = max_ideas_per_site - site_idea_counts.get(site_key, 0)
+            capped_ideas = idea_result.ideas[:remaining]
+
             final_ideas: list[IdeaCreate] = []
-            for idea in idea_result.ideas:
+            for idea in capped_ideas:
                 is_covered = check_recent_coverage(embedding, idea.platform.value, supabase)
                 final_ideas.append(IdeaCreate(**{
                     **idea.model_dump(),
@@ -306,6 +322,7 @@ async def scoring_agent_task(ctx: dict) -> dict:
 
             created_ids = write_ideas(supabase, final_ideas, article.id, article.publication_date)
             ideas_created_count += len(created_ids)
+            site_idea_counts[site_key] = site_idea_counts.get(site_key, 0) + len(created_ids)
 
             if len(created_ids) < len(final_ideas):
                 failure_count += len(final_ideas) - len(created_ids)
@@ -372,6 +389,7 @@ async def scoring_agent_task(ctx: dict) -> dict:
 async def creation_agent_task(
     ctx: dict,
     idea_ids: list[str],
+    content_type: str = "news_driven",
 ) -> dict:
     """
     Content creation agent — generates platform drafts for approved ideas.
@@ -448,9 +466,29 @@ async def creation_agent_task(
                 embedding = embed_text(embed_input, voyage_client)
                 brand_ctx = get_brand_context(embedding, idea.platform.value, supabase)
 
+            # Step 3b — Retrieve KB context if needed
+            kb_context = ""
+            if content_type in ("kb_driven", "combined") and voyage_client:
+                from app.agents.scoring.embedder import embed_text as _embed
+                embed_input = f"{idea.platform.value}: {idea.edited_angle or idea.angle}"
+                embedding = _embed(embed_input, voyage_client)
+                if embedding:
+                    try:
+                        kb_resp = supabase.rpc(
+                            "match_knowledge_base",
+                            {"query_embedding": embedding, "match_count": 8},
+                        ).execute()
+                        kb_rows = kb_resp.data or []
+                        if kb_rows:
+                            kb_context = "\n\n---\n\n".join(r["content"] for r in kb_rows)
+                    except Exception as kb_exc:
+                        logger.warning(f"creation_agent_task: KB retrieval failed | err={kb_exc}")
+
             # Step 4 — Generate content with Claude Sonnet
             gen_result = generate_content(
-                idea, article_context, brand_ctx, anthropic_client, settings.claude_model_heavy
+                idea, article_context, brand_ctx, anthropic_client, settings.claude_model_heavy,
+                kb_context=kb_context,
+                content_type=content_type,
             )
             sonnet_in += gen_result.input_tokens
             sonnet_out += gen_result.output_tokens
