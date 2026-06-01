@@ -9,15 +9,37 @@ interface Message {
   tools_used?: string[];
 }
 
+const THREAD_KEY = "orchestrator_thread_id";
+
 function getOrCreateThreadId(): string {
   if (typeof window === "undefined") return "default";
-  const key = "orchestrator_thread_id";
-  let tid = localStorage.getItem(key);
+  let tid = localStorage.getItem(THREAD_KEY);
   if (!tid) {
     tid = crypto.randomUUID();
-    localStorage.setItem(key, tid);
+    localStorage.setItem(THREAD_KEY, tid);
   }
   return tid;
+}
+
+function messagesKey(tid: string) {
+  return `orchestrator_messages_${tid}`;
+}
+
+function loadMessages(tid: string): Message[] {
+  if (typeof window === "undefined" || !tid) return [];
+  try {
+    const raw = localStorage.getItem(messagesKey(tid));
+    return raw ? (JSON.parse(raw) as Message[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveMessages(tid: string, msgs: Message[]) {
+  if (typeof window === "undefined" || !tid) return;
+  // Keep last 100 messages to avoid bloating localStorage
+  const trimmed = msgs.slice(-100);
+  localStorage.setItem(messagesKey(tid), JSON.stringify(trimmed));
 }
 
 export default function OrchestratorPage() {
@@ -29,9 +51,17 @@ export default function OrchestratorPage() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
+  // On mount: restore thread ID and its saved messages
   useEffect(() => {
-    setThreadId(getOrCreateThreadId());
+    const tid = getOrCreateThreadId();
+    setThreadId(tid);
+    setMessages(loadMessages(tid));
   }, []);
+
+  // Persist messages to localStorage whenever they change
+  useEffect(() => {
+    if (threadId) saveMessages(threadId, messages);
+  }, [messages, threadId]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -74,9 +104,10 @@ export default function OrchestratorPage() {
   };
 
   const resetThread = () => {
-    const key = "orchestrator_thread_id";
+    // Clear saved messages for the current thread, create a new one
+    if (threadId) localStorage.removeItem(messagesKey(threadId));
     const newId = crypto.randomUUID();
-    localStorage.setItem(key, newId);
+    localStorage.setItem(THREAD_KEY, newId);
     setThreadId(newId);
     setMessages([]);
     setError(null);
