@@ -63,10 +63,10 @@ export async function triggerScoring() {
   return apiFetch<{ job_id: string; status: string; agent: string }>("/trigger/scoring", { method: "POST" });
 }
 
-export async function triggerCreation(ideaIds: string[]) {
-  return apiFetch<{ job_id: string; status: string; agent: string; idea_count: number }>(
+export async function triggerCreation(ideaIds: string[], contentType: string = "news_driven") {
+  return apiFetch<{ job_id: string; status: string; agent: string; idea_count: number; content_type: string }>(
     "/trigger/creation",
-    { method: "POST", body: JSON.stringify({ idea_ids: ideaIds }) }
+    { method: "POST", body: JSON.stringify({ idea_ids: ideaIds, content_type: contentType }) }
   );
 }
 
