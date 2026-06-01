@@ -39,6 +39,8 @@ def _make_summary() -> StructuredSummary:
 
 def _make_sb(insert_id: str = "abc-123") -> MagicMock:
     sb = MagicMock()
+    # upsert_raw_content now uses .upsert() not .insert()
+    sb.table.return_value.upsert.return_value.execute.return_value.data = [{"id": insert_id}]
     sb.table.return_value.insert.return_value.execute.return_value.data = [{"id": insert_id}]
     sb.table.return_value.update.return_value.eq.return_value.execute.return_value.data = []
     sb.table.return_value.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
@@ -65,12 +67,12 @@ class TestUpsertRawContent:
     def test_pre_score_included_in_payload(self):
         sb = _make_sb()
         upsert_raw_content(sb, _make_article_content(), _make_summary(), pre_score=8.0)
-        insert_call = sb.table.return_value.insert.call_args
-        payload = insert_call.args[0]
+        upsert_call = sb.table.return_value.upsert.call_args
+        payload = upsert_call.args[0]
         assert payload["pre_score"] == 8.0
 
     def test_publication_date_none_not_in_payload(self):
-        """When publication_date is None, it must not appear in the insert payload."""
+        """When publication_date is None, it must not appear in the upsert payload."""
         sb = _make_sb()
         content = ArticleContent(
             url="https://www.livemint.com/markets/test",
@@ -82,8 +84,8 @@ class TestUpsertRawContent:
             publication_date=None,
         )
         upsert_raw_content(sb, content, _make_summary(), pre_score=5.0)
-        insert_call = sb.table.return_value.insert.call_args
-        payload = insert_call.args[0]
+        upsert_call = sb.table.return_value.upsert.call_args
+        payload = upsert_call.args[0]
         assert "publication_date" not in payload
 
 

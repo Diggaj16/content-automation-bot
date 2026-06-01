@@ -42,6 +42,7 @@ async def research_agent_task(
     processed_count = 0
     success_count = 0
     failure_count = 0
+    skipped_count = 0   # articles skipped for legitimate reasons (duplicate, stale, short, low-score)
     errors: list[dict] = []
     trace_entries: list[str] = []
 
@@ -95,10 +96,12 @@ async def research_agent_task(
                             logger, "skip_low_score", "Below site threshold",
                             {"url": link.url, "score": score, "threshold": site.pre_score_threshold},
                         ))
+                        skipped_count += 1
                         continue
 
                     normalized = normalize_url(link.url)
                     if is_url_seen(normalized, supabase):
+                        skipped_count += 1
                         continue
 
                     content = await fetch_article(
@@ -125,13 +128,15 @@ async def research_agent_task(
                                 f"A browser will open — log in once and all future scrapes will use your saved session.",
                                 settings.slack_webhook_url,
                             )
-                        failure_count += 1
+                        skipped_count += 1   # paywall = access issue, not a site failure
                         continue
 
                     if not is_article_fresh(content.publication_date, settings.article_max_age_days):
+                        skipped_count += 1
                         continue
 
                     if not is_article_long_enough(content.word_count, settings.article_min_words):
+                        skipped_count += 1
                         continue
 
                     # Step 4 — Structured summarisation (Sonnet)
@@ -215,7 +220,7 @@ async def research_agent_task(
 
     logger.info(
         f"research_agent_task done | processed={processed_count} "
-        f"success={success_count} failures={failure_count} "
+        f"success={success_count} skipped={skipped_count} failures={failure_count} "
         f"duration={duration:.1f}s cost=${total_usd:.4f}"
     )
 
@@ -232,7 +237,8 @@ async def research_agent_task(
         "status": "done",
         "processed": processed_count,
         "success": success_count,
-        "failures": failure_count,
+        "skipped": skipped_count,    # duplicates + paywalls + stale + too-short + low-score
+        "failures": failure_count,   # only real errors (DB write failed, exception, etc.)
         "duration_seconds": round(duration, 2),
         "cost_usd": round(total_usd, 6),
     }

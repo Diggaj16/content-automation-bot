@@ -48,9 +48,16 @@ def upsert_raw_content(
         payload["publication_date"] = content.publication_date.isoformat()
 
     try:
-        resp = supabase.table("raw_content").insert(payload).execute()
+        # Use upsert with ON CONFLICT on normalized_url so that if the same article
+        # URL reaches this point twice (race condition, is_url_seen DB error, etc.)
+        # Postgres updates the existing row instead of raising a unique violation.
+        resp = (
+            supabase.table("raw_content")
+            .upsert(payload, on_conflict="normalized_url")
+            .execute()
+        )
         if not resp.data:
-            logger.warning("upsert_raw_content: insert returned empty data", extra={"url": content.url})
+            logger.warning("upsert_raw_content: upsert returned empty data", extra={"url": content.url})
             return None
         article_id: str = resp.data[0]["id"]
         logger.info("upsert_raw_content: stored", extra={"id": article_id, "url": content.url})

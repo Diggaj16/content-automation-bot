@@ -27,22 +27,35 @@ def is_url_seen(normalized_url: str, supabase: Client) -> bool:
 
     Performs an exact-match SELECT on the normalized_url column (unique index).
     Uses LIMIT 1 so the DB returns as soon as any row is found.
+
+    On any DB error, returns False so the article is retried — the upsert in
+    db_writer will handle actual duplicates gracefully via ON CONFLICT.
     """
-    response = (
-        supabase
-        .table("raw_content")
-        .select("id")
-        .eq("normalized_url", normalized_url)
-        .limit(1)
-        .execute()
-    )
-    seen = len(response.data) > 0
-    if seen:
-        logger.info(
-            "is_url_seen: duplicate skipped",
-            extra={"normalized_url": normalized_url},
+    try:
+        response = (
+            supabase
+            .table("raw_content")
+            .select("id")
+            .eq("normalized_url", normalized_url)
+            .limit(1)
+            .execute()
         )
-    return seen
+        seen = len(response.data) > 0
+        if seen:
+            logger.info(
+                "is_url_seen: duplicate skipped",
+                extra={"normalized_url": normalized_url},
+            )
+        return seen
+    except Exception as exc:
+        # On DB error, return False — a duplicate URL reaching upsert_raw_content
+        # is handled safely by ON CONFLICT. This prevents a transient Supabase
+        # error from being counted as a site failure.
+        logger.warning(
+            "is_url_seen: DB error, assuming unseen",
+            extra={"normalized_url": normalized_url, "error": str(exc)},
+        )
+        return False
 
 
 def is_article_fresh(
