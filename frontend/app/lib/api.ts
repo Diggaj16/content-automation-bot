@@ -182,6 +182,40 @@ export interface CostLog {
   token_count: number;
 }
 
+// --- Knowledge Base ---
+
+export interface KbFile {
+  source_file: string;
+  chunk_count: number;
+  created_at: string;
+}
+
+export async function uploadKbFile(file: File) {
+  const formData = new FormData();
+  formData.append("file", file);
+  const res = await fetch(`${API_BASE}/knowledge-base/upload`, {
+    method: "POST",
+    body: formData,
+    // No Content-Type header — browser sets multipart boundary automatically
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Upload failed ${res.status}: ${text}`);
+  }
+  return res.json() as Promise<{ source_file: string; chunks_ingested: number }>;
+}
+
+export async function listKbFiles() {
+  return apiFetch<KbFile[]>("/knowledge-base");
+}
+
+export async function deleteKbFile(sourceFile: string) {
+  return apiFetch<{ deleted: boolean; source_file: string }>(
+    `/knowledge-base/${encodeURIComponent(sourceFile)}`,
+    { method: "DELETE" }
+  );
+}
+
 // --- Generic table browser ---
 
 export interface TableListResponse {
