@@ -18,7 +18,65 @@ from app.utils.logging import get_logger
 logger = get_logger(__name__)
 
 
-def make_tools(supabase: Client, arq_pool) -> list:
+def _duckduckgo_search(query: str, max_results: int = 3) -> list[dict]:
+    """Search using DuckDuckGo. Returns list of {url, title, snippet}."""
+    try:
+        from duckduckgo_search import DDGS
+        results = []
+        with DDGS() as ddgs:
+            for r in ddgs.text(query, max_results=max_results):
+                results.append({
+                    "url": r.get("href") or r.get("url", ""),
+                    "title": r.get("title", ""),
+                    "snippet": r.get("body", ""),
+                })
+        return results
+    except Exception as exc:
+        logger.warning("_duckduckgo_search failed", extra={"query": query, "error": str(exc)})
+        return []
+
+
+def _tavily_search(query: str, api_key: str, max_results: int = 3) -> list[dict]:
+    """Search using Tavily API. Returns list of {url, title, snippet}."""
+    try:
+        from tavily import TavilyClient
+        client = TavilyClient(api_key=api_key)
+        resp = client.search(query=query, max_results=max_results, search_depth="advanced")
+        return [
+            {
+                "url": r.get("url", ""),
+                "title": r.get("title", ""),
+                "snippet": r.get("content", ""),
+            }
+            for r in resp.get("results", [])
+        ]
+    except Exception as exc:
+        logger.warning("_tavily_search failed", extra={"query": query, "error": str(exc)})
+        return []
+
+
+def _fetch_article_sync(url: str, sessions_dir: str | None = None):
+    """Synchronous wrapper around async fetch_article for use inside tools."""
+    import asyncio
+    from app.agents.research.extractor import fetch_article
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                future = pool.submit(
+                    asyncio.run,
+                    fetch_article(url, sessions_dir=sessions_dir)
+                )
+                return future.result(timeout=30)
+        else:
+            return loop.run_until_complete(fetch_article(url, sessions_dir=sessions_dir))
+    except Exception as exc:
+        logger.warning("_fetch_article_sync failed", extra={"url": url, "error": str(exc)})
+        return None
+
+
+def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, anthropic_api_key: str | None = None) -> list:
     """Build and return all orchestrator tool callables."""
 
     @tool
@@ -679,6 +737,173 @@ def make_tools(supabase: Client, arq_pool) -> list:
             logger.warning("list_kb_files failed", extra={"error": str(exc)})
             return f"Error listing KB files: {exc}"
 
+    # ── Web search ───────────────────────────────────────────────────────────
+
+    @tool
+    async def search_web(query: str, max_results: int = 3) -> str:
+        """Search the web for current information on a topic.
+        Uses Tavily (if configured) or DuckDuckGo as fallback.
+        Returns URLs, titles, and brief snippets — use search_and_scrape for full content."""
+        results = (
+            _tavily_search(query, tavily_api_key, max_results)
+            if tavily_api_key
+            else _duckduckgo_search(query, max_results)
+        )
+        if not results:
+            return f"No search results found for: {query!r}"
+        lines = [
+            f"{i+1}. {r['title']}\n   {r['url']}\n   {r['snippet'][:120]}"
+            for i, r in enumerate(results)
+        ]
+        return f"Search results for '{query}':\n\n" + "\n\n".join(lines)
+
+    @tool
+    async def search_and_scrape(query: str, max_results: int = 3) -> str:
+        """Search the web AND scrape full article text from results.
+        Use this as the grounding step before generate_post to get current, accurate information.
+        Returns combined article text ready to use as source material."""
+        results = (
+            _tavily_search(query, tavily_api_key, max_results)
+            if tavily_api_key
+            else _duckduckgo_search(query, max_results)
+        )
+        if not results:
+            return f"No search results found for: {query!r}"
+
+        articles = []
+        for r in results:
+            url = r.get("url", "")
+            if not url:
+                continue
+            content = _fetch_article_sync(url)
+            if content is None or content.paywall_detected or content.word_count < 50:
+                continue
+            snippet = content.full_text[:2500]
+            articles.append(f"Source: {r['title']} ({url})\n{snippet}")
+
+        if not articles:
+            return (
+                f"Found {len(results)} search result(s) for '{query}' but "
+                f"all were paywalled or empty. Try a different query or provide context manually."
+            )
+        return (
+            f"Scraped {len(articles)} article(s) for '{query}':\n\n"
+            + "\n\n---\n\n".join(articles)
+        )
+
+    @tool
+    async def generate_post(
+        topic: str,
+        platform: str = "linkedin",
+        content_type: str = "news_driven",
+    ) -> str:
+        """Generate a social media post on demand using web search + brand voice.
+
+        Workflow: (1) search_and_scrape for current info on the topic,
+        (2) fetch brand voice examples from brand_memory,
+        (3) call Claude to write the post in brand voice.
+        The draft is returned in chat — say 'save this' to persist it.
+
+        platform: 'linkedin', 'twitter', 'blog', or 'email'
+        content_type: 'news_driven' (use article facts), 'kb_driven' (use KB docs), 'combined'"""
+        if not anthropic_api_key:
+            return "Error: ANTHROPIC_API_KEY not configured."
+
+        # Step 1 — Get current information
+        scraped = (
+            _tavily_search(topic, tavily_api_key, 3)
+            if tavily_api_key
+            else _duckduckgo_search(topic, 3)
+        )
+        article_text = ""
+        for r in scraped:
+            url = r.get("url", "")
+            if not url:
+                continue
+            content = _fetch_article_sync(url)
+            if content and not content.paywall_detected and content.word_count >= 50:
+                article_text += f"\n\nSource: {r['title']}\n{content.full_text[:2000]}"
+                break  # one good article is enough for generation
+
+        if not article_text:
+            article_text = f"General knowledge about: {topic}"
+
+        # Step 2 — Get brand voice examples
+        brand_examples = ""
+        try:
+            resp = (
+                supabase.table("brand_memory")
+                .select("content")
+                .eq("platform", platform)
+                .order("created_at", desc=True)
+                .limit(3)
+                .execute()
+            )
+            examples = [r["content"] for r in (resp.data or [])]
+            if examples:
+                brand_examples = "Brand voice examples (match this style):\n\n" + "\n\n---\n\n".join(examples)
+        except Exception:
+            pass
+
+        # Step 3 — Generate with Claude
+        try:
+            from anthropic import Anthropic
+            client = Anthropic(api_key=anthropic_api_key)
+            system = f"""You write educational Indian finance content for {platform}.
+Write in the exact style and tone of the brand voice examples provided.
+Rules: educational not advisory, no specific investment recommendations, add a disclaimer at the end,
+use relevant hashtags for {platform}, keep it concise and engaging."""
+
+            user_prompt = f"""Write a {platform} post about: {topic}
+
+{brand_examples}
+
+Source material (use facts from this, don't fabricate numbers):
+{article_text[:3000]}
+
+Write the full post now. Return only the post text, nothing else."""
+
+            message = client.messages.create(
+                model="claude-haiku-4-5",
+                max_tokens=1024,
+                system=system,
+                messages=[{"role": "user", "content": user_prompt}],
+            )
+            post_text = message.content[0].text.strip() if message.content else ""
+            if not post_text:
+                return "Error: Claude returned empty response."
+            return (
+                f"Generated {platform} post about '{topic}':\n\n"
+                f"{post_text}\n\n"
+                f"---\nSay 'save this as a draft' to save it, or ask me to revise it."
+            )
+        except Exception as exc:
+            logger.warning("generate_post: Claude call failed", extra={"error": str(exc)})
+            return f"Error generating post: {exc}"
+
+    @tool
+    async def save_draft(content: str, platform: str) -> str:
+        """Save a generated post as a pending draft for review and approval.
+        content: the full post text. platform: 'linkedin', 'twitter', 'blog', or 'email'."""
+        try:
+            resp = supabase.table("drafts").insert({
+                "content_text": content,
+                "platform": platform,
+                "approval_status": "pending_approval",
+                "agent_reasoning": "Generated on-demand via orchestrator",
+                "finance_flags": [],
+            }).execute()
+            if resp.data:
+                draft_id = resp.data[0].get("id", "?")
+                return (
+                    f"Saved as pending draft (id={str(draft_id)[:8]}...). "
+                    f"Go to Gate 2 (Drafts) to review and approve it for publishing."
+                )
+            return "Draft saved."
+        except Exception as exc:
+            logger.warning("save_draft failed", extra={"error": str(exc)})
+            return f"Error saving draft: {exc}"
+
     return [
         # Pipeline triggers
         trigger_research, trigger_scoring, trigger_creation,
@@ -698,4 +923,6 @@ def make_tools(supabase: Client, arq_pool) -> list:
         login_to_site,
         # Legacy
         get_pending_ideas,
+        # Web search & on-demand generation
+        search_web, search_and_scrape, generate_post, save_draft,
     ]

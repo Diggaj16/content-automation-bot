@@ -89,6 +89,7 @@ def build_orchestrator_agent(
     arq_pool,
     anthropic_api_key: str,
     model: str = "claude-sonnet-4-5",
+    tavily_api_key: str | None = None,
 ):
     """
     Build and return a compiled LangGraph ReAct agent.
@@ -96,7 +97,12 @@ def build_orchestrator_agent(
     Call once at startup. The returned graph is thread-safe and can be
     called concurrently with different thread_id values in the config.
     """
-    tools = make_tools(supabase, arq_pool)
+    tools = make_tools(
+        supabase=supabase,
+        arq_pool=arq_pool,
+        tavily_api_key=tavily_api_key,
+        anthropic_api_key=anthropic_api_key,
+    )
     llm = ChatAnthropic(model=model, api_key=anthropic_api_key)
     memory = MemorySaver()
 

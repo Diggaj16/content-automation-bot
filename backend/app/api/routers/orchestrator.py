@@ -57,6 +57,7 @@ async def _get_or_build_agent(request: Request, supabase: Client, settings: Sett
                 arq_pool=arq_pool,
                 anthropic_api_key=settings.anthropic_api_key,
                 model=settings.orchestrator_model,
+                tavily_api_key=settings.tavily_api_key,
             )
     return request.app.state.orchestrator_agent
 
