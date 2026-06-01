@@ -46,7 +46,7 @@ async def upload_kb_file(
         voyage_client = voyageai.Client(api_key=settings.voyage_api_key)
 
     try:
-        chunks_written = ingest_file(filename, text, voyage_client, supabase)
+        chunks_written = ingest_file(filename, text, voyage_client, supabase, voyage_model=settings.voyage_model)
     except Exception as exc:
         logger.warning("kb: ingestion failed", extra={"source_file": filename, "error": str(exc)})
         raise HTTPException(status_code=500, detail="Failed to ingest file.")

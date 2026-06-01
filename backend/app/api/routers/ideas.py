@@ -114,6 +114,6 @@ def _maybe_generate_summary(supabase: Client, settings: Settings) -> None:
         client = Anthropic(api_key=settings.anthropic_api_key)
         summary = generate_decision_summary(rejected, client, settings.claude_model_light)
         write_summary(supabase, summary, count)
-        log.info(f"_maybe_generate_summary: wrote summary for {count} rejections")
+        log.info("_maybe_generate_summary: wrote summary", extra={"rejection_count": count})
     except Exception as exc:
         log.warning("_maybe_generate_summary failed", extra={"error": str(exc)})

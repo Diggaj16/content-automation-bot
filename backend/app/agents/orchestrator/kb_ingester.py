@@ -27,7 +27,13 @@ def extract_text(filename: str, content_bytes: bytes) -> str:
     if name_lower.endswith(".txt"):
         return content_bytes.decode("utf-8", errors="replace").strip()
     elif name_lower.endswith(".pdf"):
-        reader = PyPDF2.PdfReader(io.BytesIO(content_bytes))
+        try:
+            reader = PyPDF2.PdfReader(io.BytesIO(content_bytes))
+        except PyPDF2.errors.PdfReadError as exc:
+            raise ValueError(
+                f"Cannot read PDF '{filename}': {exc}. "
+                "The file may be encrypted, password-protected, or corrupted."
+            ) from exc
         pages = []
         for page in reader.pages:
             text = page.extract_text()
@@ -80,6 +86,7 @@ def ingest_file(
     text: str,
     voyage_client,
     supabase: Client,
+    voyage_model: str = "voyage-3",
 ) -> int:
     """
     Chunk text and upsert each chunk into `knowledge_base`.
@@ -100,7 +107,7 @@ def ingest_file(
 
         if voyage_client is not None:
             try:
-                result = voyage_client.embed([chunk], model="voyage-3", input_type="document")
+                result = voyage_client.embed([chunk], model=voyage_model, input_type="document")
                 embedding = result.embeddings[0]
                 row["embedding"] = embedding
             except Exception as exc:

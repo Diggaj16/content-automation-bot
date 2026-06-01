@@ -115,6 +115,7 @@ def make_tools(supabase: Client, arq_pool) -> list:
             analytics_resp = (
                 supabase.table("content_analytics")
                 .select("platform, performance_score")
+                .limit(100)
                 .execute()
             )
 

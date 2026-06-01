@@ -471,7 +471,15 @@ async def creation_agent_task(
             kb_context = ""
             if content_type in ("kb_driven", "combined"):
                 if not voyage_client:
-                    logger.warning(f"creation_agent_task: KB context requested but Voyage client unavailable | content_type={content_type} | idea_id={idea_id}")
+                    logger.warning(
+                        "creation_agent_task: KB context requested but Voyage client unavailable",
+                        extra={"content_type": content_type, "idea_id": idea_id},
+                    )
+                    trace_entries.append(log_agent_decision(
+                        logger, "kb_context_skipped",
+                        "Voyage client unavailable — KB context omitted from prompt",
+                        {"idea_id": idea_id, "content_type": content_type},
+                    ))
                 elif embedding:
                     try:
                         kb_resp = supabase.rpc(
@@ -482,7 +490,15 @@ async def creation_agent_task(
                         if kb_rows:
                             kb_context = "\n\n---\n\n".join(r["content"] for r in kb_rows)
                     except Exception as kb_exc:
-                        logger.warning(f"creation_agent_task: KB retrieval failed | err={kb_exc}")
+                        logger.warning(
+                            "creation_agent_task: KB retrieval failed",
+                            extra={"idea_id": idea_id, "error": str(kb_exc)},
+                        )
+                        trace_entries.append(log_agent_decision(
+                            logger, "kb_retrieval_failed",
+                            "KB RPC failed — draft will be generated without KB context",
+                            {"idea_id": idea_id, "error": str(kb_exc)},
+                        ))
 
             # Step 4 — Generate content with Claude Sonnet
             gen_result = generate_content(

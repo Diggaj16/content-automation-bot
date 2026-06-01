@@ -48,19 +48,27 @@ def count_unsummarized_rejections(supabase: Client) -> tuple[int, Optional[datet
         return 0, None
 
 
+_MAX_FETCH_LIMIT = 200  # Safety cap so the first-ever run never pulls unbounded history
+
+
 def fetch_recent_rejections(
     supabase: Client,
     since_ts: Optional[datetime],
     limit: int,
 ) -> list[dict]:
-    """Fetch recently rejected ideas returning angle, platform, agent_reasoning."""
+    """Fetch recently rejected ideas returning angle, platform, agent_reasoning.
+
+    The limit is capped at _MAX_FETCH_LIMIT so the first-ever summary run
+    (no since_ts) cannot pull the entire historical rejection log into the
+    Claude prompt.
+    """
     try:
         query = (
             supabase.table("ideas")
             .select("angle, platform, agent_reasoning")
             .eq("approval_status", "rejected")
             .order("updated_at", desc=True)
-            .limit(limit)
+            .limit(min(limit, _MAX_FETCH_LIMIT))
         )
         if since_ts:
             query = query.gt("updated_at", since_ts.isoformat())

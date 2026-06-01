@@ -26,6 +26,7 @@ class Settings(BaseSettings):
 
     # Voyage AI
     voyage_api_key: Optional[str] = Field(None, alias="VOYAGE_API_KEY")
+    voyage_model: str = Field("voyage-3", alias="VOYAGE_MODEL")
 
     # Redis
     redis_url: str = Field("redis://localhost:6379", alias="REDIS_URL")
