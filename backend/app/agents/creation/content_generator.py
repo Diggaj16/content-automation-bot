@@ -76,9 +76,16 @@ def generate_content(
     brand_context: str,
     client: Anthropic,
     model: str,
+    kb_context: str = "",
+    content_type: str = "news_driven",
 ) -> ContentGenerationResult:
     """
     Generate platform-specific content for an approved idea using Claude Sonnet.
+
+    content_type controls which context sources are included in the prompt:
+      - news_driven: article_context only
+      - kb_driven:   kb_context only
+      - combined:    both article_context and kb_context
 
     Args:
         idea:            The approved Idea (uses edited_angle if set, else angle).
@@ -86,6 +93,8 @@ def generate_content(
         brand_context:   Formatted past brand content examples from match_brand_memory.
         client:          Anthropic sync client.
         model:           Model name (e.g. "claude-sonnet-4-5").
+        kb_context:      Formatted knowledge base chunks (empty if not retrieved).
+        content_type:    One of "news_driven", "kb_driven", "combined".
 
     Returns:
         ContentGenerationResult with draft_create=None on any failure. Never raises.
@@ -95,8 +104,22 @@ def generate_content(
     guide = _PLATFORM_GUIDES.get(platform, _PLATFORM_GUIDES["linkedin"])
 
     context_section = ""
-    if article_context:
-        context_section = f"\n\nSource article context:\n{article_context}"
+
+    if content_type == "kb_driven":
+        # KB only — ignore article context
+        if kb_context:
+            context_section = f"\n\nKnowledge base context:\n{kb_context}"
+    elif content_type == "combined":
+        # Both sources
+        if article_context:
+            context_section = f"\n\nSource article context:\n{article_context}"
+        if kb_context:
+            context_section += f"\n\nKnowledge base context:\n{kb_context}"
+    else:
+        # news_driven (default) — article context only
+        if article_context:
+            context_section = f"\n\nSource article context:\n{article_context}"
+
     if brand_context:
         context_section += f"\n\n{brand_context}"
 
@@ -129,7 +152,7 @@ def generate_content(
         # Strip markdown fences if present
         match = re.search(r"\{.*\}", raw, re.DOTALL)
         if not match:
-            logger.warning(f"generate_content: no JSON object found in response | platform={platform}")
+            logger.warning("generate_content: no JSON object found in response", extra={"platform": platform})
             return ContentGenerationResult(input_tokens=input_tokens, output_tokens=output_tokens)
 
         data = json.loads(match.group())
@@ -137,7 +160,7 @@ def generate_content(
         reasoning = data.get("reasoning", "").strip()
 
         if not content_text:
-            logger.warning(f"generate_content: empty content_text | platform={platform}")
+            logger.warning("generate_content: empty content_text", extra={"platform": platform})
             return ContentGenerationResult(input_tokens=input_tokens, output_tokens=output_tokens)
 
         draft_create = DraftCreate(
@@ -155,8 +178,8 @@ def generate_content(
         )
 
     except json.JSONDecodeError as exc:
-        logger.warning(f"generate_content: JSON parse error | platform={platform} | err={exc}")
+        logger.warning("generate_content: JSON parse error", extra={"platform": platform, "err": str(exc)})
         return ContentGenerationResult()
     except Exception as exc:
-        logger.error(f"generate_content: API error | platform={platform} | err={exc}")
+        logger.error("generate_content: API error", extra={"platform": platform, "err": str(exc)})
         return ContentGenerationResult()
