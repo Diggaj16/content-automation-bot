@@ -208,8 +208,8 @@ export async function getTableRows(
   } = {}
 ) {
   const params = new URLSearchParams();
-  if (opts.limit) params.set("limit", String(opts.limit));
-  if (opts.offset) params.set("offset", String(opts.offset));
+  if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+  if (opts.offset !== undefined) params.set("offset", String(opts.offset));
   if (opts.orderBy) params.set("order_by", opts.orderBy);
   if (opts.orderDesc !== undefined) params.set("order_desc", String(opts.orderDesc));
   if (opts.filterColumn) params.set("filter_column", opts.filterColumn);

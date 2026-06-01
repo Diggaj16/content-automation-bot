@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   getSubscribers,
   addSubscriber,
@@ -21,10 +21,21 @@ export default function SubscribersPage() {
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
 
+  const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
+
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const showToast = (msg: string) => {
+    if (toastTimerRef.current !== null) clearTimeout(toastTimerRef.current);
     setToast(msg);
-    setTimeout(() => setToast(null), 3000);
+    toastTimerRef.current = setTimeout(() => setToast(null), 3000);
   };
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current !== null) clearTimeout(toastTimerRef.current);
+    };
+  }, []);
 
   const fetchSubscribers = async () => {
     setLoading(true);
@@ -61,22 +72,31 @@ export default function SubscribersPage() {
   };
 
   const handleToggle = async (sub: Subscriber) => {
+    if (busyIds.has(sub.id)) return;
+    setBusyIds((prev) => new Set(prev).add(sub.id));
     try {
       const updated = await updateSubscriber(sub.id, { active: !sub.active });
       setSubscribers((prev) => prev.map((s) => (s.id === sub.id ? updated : s)));
       showToast(`${sub.email} ${updated.active ? "activated" : "deactivated"}.`);
     } catch (e: unknown) {
       showToast(e instanceof Error ? e.message : "Failed to update");
+    } finally {
+      setBusyIds((prev) => { const n = new Set(prev); n.delete(sub.id); return n; });
     }
   };
 
   const handleDelete = async (sub: Subscriber) => {
+    if (!confirm(`Remove ${sub.email}?`)) return;
+    if (busyIds.has(sub.id)) return;
+    setBusyIds((prev) => new Set(prev).add(sub.id));
     try {
       await deleteSubscriber(sub.id);
       setSubscribers((prev) => prev.filter((s) => s.id !== sub.id));
       showToast(`${sub.email} removed.`);
     } catch (e: unknown) {
       showToast(e instanceof Error ? e.message : "Failed to delete");
+    } finally {
+      setBusyIds((prev) => { const n = new Set(prev); n.delete(sub.id); return n; });
     }
   };
 
@@ -195,9 +215,13 @@ export default function SubscribersPage() {
                     <td className="px-4 py-3 text-xs">
                       {link ? (
                         <button
-                          onClick={() => {
-                            navigator.clipboard.writeText(link);
-                            showToast("Link copied!");
+                          onClick={async () => {
+                            try {
+                              await navigator.clipboard.writeText(link);
+                              showToast("Link copied!");
+                            } catch {
+                              showToast("Failed to copy link");
+                            }
                           }}
                           className="text-blue-600 hover:underline"
                         >
@@ -211,13 +235,15 @@ export default function SubscribersPage() {
                       <div className="flex gap-2">
                         <button
                           onClick={() => handleToggle(sub)}
-                          className="text-xs text-blue-600 hover:underline"
+                          disabled={busyIds.has(sub.id)}
+                          className="text-xs text-blue-600 hover:underline disabled:opacity-50"
                         >
                           {sub.active ? "Deactivate" : "Activate"}
                         </button>
                         <button
                           onClick={() => handleDelete(sub)}
-                          className="text-xs text-red-600 hover:underline"
+                          disabled={busyIds.has(sub.id)}
+                          className="text-xs text-red-600 hover:underline disabled:opacity-50"
                         >
                           Remove
                         </button>
