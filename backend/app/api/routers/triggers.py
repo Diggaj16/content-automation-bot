@@ -11,13 +11,14 @@ from pydantic import BaseModel
 from supabase import Client
 
 from app.api.deps import get_arq_pool, get_supabase
+from app.db.models import ContentType
 
 router = APIRouter(tags=["System"])
 
 
 class CreationTriggerRequest(BaseModel):
     idea_ids: list[str]
-    content_type: str = "news_driven"
+    content_type: ContentType = ContentType.NEWS_DRIVEN
 
 
 @router.post("/trigger/research")
@@ -65,14 +66,14 @@ async def trigger_creation(
     job = await pool.enqueue_job(
         "creation_agent_task",
         idea_ids=body.idea_ids,
-        content_type=body.content_type,
+        content_type=body.content_type.value,
     )
     return {
         "job_id": job.job_id if job else None,
         "status": "enqueued",
         "agent": "creation",
         "idea_count": len(body.idea_ids),
-        "content_type": body.content_type,
+        "content_type": body.content_type.value,
     }
 
 

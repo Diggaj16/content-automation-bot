@@ -359,6 +359,7 @@ export default function IdeasPage() {
           >
             <option value="news_driven">News-driven</option>
             <option value="kb_driven">KB-driven</option>
+            <option value="combined">Combined</option>
           </select>
           <button
             onClick={async () => {

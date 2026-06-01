@@ -459,6 +459,7 @@ async def creation_agent_task(
                     )
 
             # Step 3 — Embed idea text and get brand context
+            embedding: list[float] = []
             brand_ctx = ""
             if voyage_client:
                 from app.agents.scoring.embedder import embed_text
@@ -468,11 +469,10 @@ async def creation_agent_task(
 
             # Step 3b — Retrieve KB context if needed
             kb_context = ""
-            if content_type in ("kb_driven", "combined") and voyage_client:
-                from app.agents.scoring.embedder import embed_text as _embed
-                embed_input = f"{idea.platform.value}: {idea.edited_angle or idea.angle}"
-                embedding = _embed(embed_input, voyage_client)
-                if embedding:
+            if content_type in ("kb_driven", "combined"):
+                if not voyage_client:
+                    logger.warning(f"creation_agent_task: KB context requested but Voyage client unavailable | content_type={content_type} | idea_id={idea_id}")
+                elif embedding:
                     try:
                         kb_resp = supabase.rpc(
                             "match_knowledge_base",
