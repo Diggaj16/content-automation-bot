@@ -2076,7 +2076,7 @@ INITIAL_SITES = [
         "site_name":           "LiveMint India News",
         "section_url":         "https://www.livemint.com/news/india",
         "active":              True,
-        "pre_score_threshold": 6.0,  # Higher — too much general news noise
+        "pre_score_threshold": 6.5,  # Higher — too much general news noise
     },
     {
         "site_name":           "Business Standard Today",
@@ -2088,7 +2088,7 @@ INITIAL_SITES = [
         "site_name":           "Business Standard",
         "section_url":         "https://www.business-standard.com",
         "active":              True,
-        "pre_score_threshold": 4.0,
+        "pre_score_threshold": 5.0,
     },
     {
         "site_name":           "Business Standard Mutual Fund",

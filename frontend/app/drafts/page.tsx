@@ -211,7 +211,7 @@ export default function DraftsPage() {
     setLoading(true);
     setError(null);
     try {
-      setDrafts(await getDrafts("pending"));
+      setDrafts(await getDrafts("pending_approval"));
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to load drafts");
     } finally {

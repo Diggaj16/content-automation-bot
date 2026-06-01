@@ -44,13 +44,22 @@ def make_tools(supabase: Client, arq_pool) -> list:
             logger.warning("trigger_scoring failed", extra={"error": str(exc)})
             return f"Error triggering scoring: {exc}"
 
+    _VALID_CONTENT_TYPES = {"news_driven", "kb_driven", "combined"}
+
     @tool
     async def trigger_creation(idea_ids: list[str], content_type: str = "combined") -> str:
         """Trigger the creation agent to generate drafts for approved ideas.
-        The orchestrator always uses content_type='combined' (article + KB context).
-        idea_ids: list of approved idea UUID strings."""
+        idea_ids: list of approved idea UUID strings.
+        content_type: one of 'news_driven' (article context only),
+          'kb_driven' (knowledge-base context only), or
+          'combined' (article + KB context, default)."""
         if not idea_ids:
             return "Error: idea_ids must not be empty."
+        if content_type not in _VALID_CONTENT_TYPES:
+            return (
+                f"Error: invalid content_type '{content_type}'. "
+                f"Must be one of: {', '.join(sorted(_VALID_CONTENT_TYPES))}."
+            )
         try:
             job = await arq_pool.enqueue_job(
                 "creation_agent_task",

@@ -211,7 +211,7 @@ export default function DashboardPage() {
                           {entry.agent_name}
                         </td>
                         <td className="px-4 py-2 text-right text-gray-700">
-                          ${entry.total_usd.toFixed(4)}
+                          ${(entry.estimated_cost_usd ?? 0).toFixed(4)}
                         </td>
                         <td className="px-4 py-2 text-right text-gray-600">
                           {entry.token_count.toLocaleString()}

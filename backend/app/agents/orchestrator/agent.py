@@ -44,7 +44,7 @@ def build_orchestrator_agent(
     supabase: Client,
     arq_pool,
     anthropic_api_key: str,
-    model: str = "claude-sonnet-4-6",
+    model: str = "claude-sonnet-4-5",
 ):
     """
     Build and return a compiled LangGraph ReAct agent.
