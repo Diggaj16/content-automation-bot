@@ -63,6 +63,17 @@ export async function triggerScoring() {
   return apiFetch<{ job_id: string; status: string; agent: string }>("/trigger/scoring", { method: "POST" });
 }
 
+export interface JobStatusResponse {
+  job_id: string;
+  /** "queued" | "in_progress" | "complete" | "not_found" | "deferred" */
+  status: string;
+  result: Record<string, unknown> | null;
+}
+
+export async function getJobStatus(jobId: string) {
+  return apiFetch<JobStatusResponse>(`/jobs/${jobId}`);
+}
+
 export async function triggerCreation(ideaIds: string[], contentType: string = "news_driven") {
   return apiFetch<{ job_id: string; status: string; agent: string; idea_count: number; content_type: string }>(
     "/trigger/creation",

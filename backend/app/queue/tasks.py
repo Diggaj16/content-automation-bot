@@ -2,10 +2,15 @@
 Stub arq task functions — one per agent.
 Each agent plan replaces its stub with the real implementation.
 """
+import asyncio
+
 from anthropic import Anthropic
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+# Max simultaneous article fetches per site (browser tabs effectively)
+_ARTICLE_CONCURRENCY = 3
 
 
 async def research_agent_task(
@@ -87,27 +92,63 @@ async def research_agent_task(
                     f"pre_score count mismatch: {len(links)} links vs {len(pre_result.scores)} scores"
                 )
 
-            # Step 3 — Process each article that passes the threshold
-            for link, score in zip(links, pre_result.scores):
+            # Step 3 — Filter: pre-score threshold + batch dedup (1 DB call instead of N)
+            score_filtered = [
+                (link, score)
+                for link, score in zip(links, pre_result.scores)
+                if score >= site.pre_score_threshold
+            ]
+            low_score_count = len(links) - len(score_filtered)
+            skipped_count += low_score_count
+
+            if score_filtered:
+                # Batch dedup: one Supabase IN() query instead of N individual SELECTs
+                norm_map = {normalize_url(l.url): (l, s) for l, s in score_filtered}
+                try:
+                    seen_resp = (
+                        supabase.table("raw_content")
+                        .select("normalized_url")
+                        .in_("normalized_url", list(norm_map.keys()))
+                        .execute()
+                    )
+                    seen_set = {r["normalized_url"] for r in (seen_resp.data or [])}
+                except Exception as dedup_exc:
+                    logger.warning("research: batch dedup failed, assuming all unseen",
+                                   extra={"error": str(dedup_exc)})
+                    seen_set = set()
+
+                to_fetch = [
+                    (l, s, norm)
+                    for norm, (l, s) in norm_map.items()
+                    if norm not in seen_set
+                ]
+                skipped_count += len(norm_map) - len(to_fetch)
+            else:
+                to_fetch = []
+
+            # Step 3b — Fetch articles in parallel (up to _ARTICLE_CONCURRENCY at once)
+            sem = asyncio.Semaphore(_ARTICLE_CONCURRENCY)
+
+            async def _fetch(link_url: str):
+                async with sem:
+                    return await fetch_article(link_url, sessions_dir=settings.browser_sessions_dir)
+
+            fetch_results = await asyncio.gather(
+                *[_fetch(link.url) for link, _, _ in to_fetch],
+                return_exceptions=True,
+            )
+
+            for (link, score, _norm), content_or_exc in zip(to_fetch, fetch_results):
                 processed_count += 1
                 try:
-                    if score < site.pre_score_threshold:
-                        trace_entries.append(log_agent_decision(
-                            logger, "skip_low_score", "Below site threshold",
-                            {"url": link.url, "score": score, "threshold": site.pre_score_threshold},
-                        ))
-                        skipped_count += 1
+                    if isinstance(content_or_exc, Exception):
+                        logger.warning("research_agent_task: article fetch error",
+                                       extra={"url": link.url, "error": str(content_or_exc)})
+                        failure_count += 1
+                        errors.append({"url": link.url, "error": str(content_or_exc)})
                         continue
 
-                    normalized = normalize_url(link.url)
-                    if is_url_seen(normalized, supabase):
-                        skipped_count += 1
-                        continue
-
-                    content = await fetch_article(
-                        link.url,
-                        sessions_dir=settings.browser_sessions_dir,
-                    )
+                    content = content_or_exc
 
                     if content.paywall_detected:
                         trace_entries.append(log_agent_decision(

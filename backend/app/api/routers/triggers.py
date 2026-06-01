@@ -6,7 +6,7 @@ POST /trigger/scoring   — manually enqueue scoring_agent_task
 POST /trigger/creation  — manually enqueue creation_agent_task
 GET  /status            — recent run_logs + daily cost summary
 """
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from supabase import Client
 
@@ -75,6 +75,24 @@ async def trigger_creation(
         "idea_count": len(body.idea_ids),
         "content_type": body.content_type.value,
     }
+
+
+@router.get("/jobs/{job_id}")
+async def get_job_status(job_id: str, request: Request) -> dict:
+    """Poll arq job status. Returns status + result when complete."""
+    pool = request.app.state.arq_pool
+    if pool is None:
+        raise HTTPException(status_code=503, detail="Queue unavailable — Redis not connected")
+    from arq.jobs import Job
+    job = Job(job_id, pool)
+    status = await job.status()
+    result = None
+    if status.value == "complete":
+        try:
+            result = await job.result(timeout=0)
+        except Exception:
+            pass
+    return {"job_id": job_id, "status": status.value, "result": result}
 
 
 @router.get("/status")
