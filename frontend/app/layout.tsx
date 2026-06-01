@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import Link from "next/link";
+import GlobalJobMonitor from "./components/GlobalJobMonitor";
 
 export const metadata: Metadata = {
   title: "Content Automation",
@@ -65,13 +66,13 @@ export default function RootLayout({
       <body className="min-h-screen bg-gray-50">
         <div className="flex min-h-screen">
           {/* Sidebar */}
-          <aside className="w-56 bg-white border-r border-gray-200 flex-shrink-0 overflow-y-auto">
+          <aside className="w-56 bg-white border-r border-gray-200 flex-shrink-0 overflow-y-auto flex flex-col">
             <div className="px-4 py-4 border-b border-gray-100">
               <Link href="/" className="font-semibold text-gray-900 text-sm">
                 Content Automation
               </Link>
             </div>
-            <nav className="py-2">
+            <nav className="py-2 flex-1">
               {NAV_SECTIONS.map((section) => (
                 <div key={section.label} className="mb-1">
                   <div className="px-4 py-1.5 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
@@ -89,6 +90,8 @@ export default function RootLayout({
                 </div>
               ))}
             </nav>
+            {/* Live pipeline status — persists across page navigation */}
+            <GlobalJobMonitor />
           </aside>
 
           {/* Main content */}
