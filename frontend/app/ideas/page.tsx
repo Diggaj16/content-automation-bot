@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { getIdeas, approveIdea, triggerCreation, type Idea } from "../lib/api";
+import { useJobStatus } from "../hooks/useJobStatus";
 
 // ─── shared ──────────────────────────────────────────────────────────────────
 
@@ -271,6 +272,8 @@ export default function IdeasPage() {
 
   const [rejectingAll, setRejectingAll] = useState(false);
 
+  const creationJob = useJobStatus();
+
   // ── toast ──────────────────────────────────────────────────────────────────
   const showToast = useCallback((msg: string) => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -349,6 +352,13 @@ export default function IdeasPage() {
     setCreationMsg(null);
     try {
       const r = await triggerCreation(approvedIds, contentType);
+      if (r.job_id) {
+        creationJob.start(
+          r.job_id,
+          "creation",
+          `Creation (${approvedIds.length} idea${approvedIds.length !== 1 ? "s" : ""})`
+        );
+      }
       setCreationMsg(
         `Queued ${r.idea_count} idea${r.idea_count !== 1 ? "s" : ""} as ${r.content_type} — job: ${r.job_id ?? "n/a"}`
       );

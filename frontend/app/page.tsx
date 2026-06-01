@@ -47,7 +47,7 @@ export default function DashboardPage() {
     research.reset();
     try {
       const r = await triggerResearch();
-      if (r.job_id) research.start(r.job_id);
+      if (r.job_id) research.start(r.job_id, "research", "Research");
     } catch (e: unknown) {
       // show the API error inline
     }
@@ -57,7 +57,7 @@ export default function DashboardPage() {
     scoring.reset();
     try {
       const r = await triggerScoring();
-      if (r.job_id) scoring.start(r.job_id);
+      if (r.job_id) scoring.start(r.job_id, "scoring", "Scoring");
     } catch (e: unknown) {
       // show the API error inline
     }
