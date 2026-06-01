@@ -87,27 +87,29 @@ def test_ingest_file_writes_chunks_without_voyage():
     sb.table.return_value.upsert.return_value.execute.return_value.data = [{"id": "x"}]
 
     # 3-word text → 1 chunk
-    count = ingest_file("test.txt", "one two three", voyage_client=None, supabase=sb)
+    count = ingest_file("test.txt", "one two three", embed_client=None, supabase=sb)
     assert count == 1
     sb.table.assert_called_with("knowledge_base")
 
 
-def test_ingest_file_embeds_when_voyage_present():
+def test_ingest_file_embeds_when_client_present():
     from app.agents.orchestrator.kb_ingester import ingest_file
+    from app.agents.embedding.client import EmbedClient
+    from unittest.mock import MagicMock
 
-    voyage = MagicMock()
-    voyage.embed.return_value.embeddings = [[0.1] * 1024]
+    embed_client = MagicMock(spec=EmbedClient)
+    embed_client.embed.return_value = [[0.1] * 768]  # one chunk → one 768-dim vector
 
     sb = MagicMock()
     sb.table.return_value.upsert.return_value.execute.return_value.data = [{"id": "x"}]
 
-    ingest_file("test.txt", "word " * 10, voyage_client=voyage, supabase=sb)
-    voyage.embed.assert_called()
+    ingest_file("test.txt", "word " * 10, embed_client=embed_client, supabase=sb)
+    embed_client.embed.assert_called()
 
 
 def test_ingest_file_returns_zero_for_empty_text():
     from app.agents.orchestrator.kb_ingester import ingest_file
     sb = MagicMock()
-    count = ingest_file("empty.txt", "", voyage_client=None, supabase=sb)
+    count = ingest_file("empty.txt", "", embed_client=None, supabase=sb)
     assert count == 0
     sb.table.return_value.upsert.assert_not_called()

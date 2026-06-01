@@ -2,7 +2,7 @@
 Knowledge base file ingestion: extract → chunk → embed → upsert.
 
 Supports PDF (PyPDF2) and TXT (UTF-8) files.
-Embedding with Voyage AI is optional; pass voyage_client=None to skip.
+Embedding is optional; pass embed_client=None to skip (chunks stored without vectors).
 """
 from __future__ import annotations
 
@@ -84,18 +84,30 @@ def chunk_text(
 def ingest_file(
     filename: str,
     text: str,
-    voyage_client,
+    embed_client,
     supabase: Client,
-    voyage_model: str = "voyage-3",
 ) -> int:
     """
-    Chunk text and upsert each chunk into `knowledge_base`.
+    Chunk text, batch-embed all chunks in a single API call, then upsert.
 
     Returns the number of chunks written.
+    Embedding is skipped if embed_client is None — chunks are stored without vectors.
     """
+    from app.agents.embedding.client import EmbedClient, NoOpEmbedder
+
     chunks = chunk_text(text)
     if not chunks:
         return 0
+
+    # Batch-embed all chunks in one API call (much faster than one-by-one)
+    embeddings: list[list[float]] = []
+    if embed_client is not None and not isinstance(embed_client, NoOpEmbedder):
+        try:
+            embeddings = embed_client.embed(chunks)
+        except Exception as exc:
+            logger.warning("kb_ingester: batch embed failed, storing without vectors",
+                           extra={"source_file": filename, "error": str(exc)})
+            embeddings = []
 
     written = 0
     for idx, chunk in enumerate(chunks):
@@ -104,14 +116,8 @@ def ingest_file(
             "chunk_index": idx,
             "content": chunk,
         }
-
-        if voyage_client is not None:
-            try:
-                result = voyage_client.embed([chunk], model=voyage_model, input_type="document")
-                embedding = result.embeddings[0]
-                row["embedding"] = embedding
-            except Exception as exc:
-                logger.warning("kb_ingester: embed failed for chunk", extra={"chunk_idx": idx, "error": str(exc)})
+        if embeddings and idx < len(embeddings) and embeddings[idx]:
+            row["embedding"] = embeddings[idx]
 
         try:
             resp = (
@@ -122,7 +128,10 @@ def ingest_file(
             if resp.data:
                 written += 1
         except Exception as exc:
-            logger.warning("kb_ingester: upsert failed for chunk", extra={"chunk_idx": idx, "error": str(exc)})
+            logger.warning("kb_ingester: upsert failed for chunk",
+                           extra={"chunk_idx": idx, "error": str(exc)})
 
-    logger.info("kb_ingester: ingestion complete", extra={"source_file": filename, "written": written, "total": len(chunks)})
+    logger.info("kb_ingester: ingestion complete",
+                extra={"source_file": filename, "written": written, "total": len(chunks),
+                       "embedded": len([e for e in embeddings if e])})
     return written

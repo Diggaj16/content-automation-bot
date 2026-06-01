@@ -306,10 +306,11 @@ async def scoring_agent_task(ctx: dict) -> dict:
 
     anthropic_client = Anthropic(api_key=settings.anthropic_api_key)
 
-    voyage_client = None
-    if settings.voyage_api_key:
-        import voyageai
-        voyage_client = voyageai.Client(api_key=settings.voyage_api_key)
+    from app.agents.embedding.client import make_embed_client
+    embed_client = make_embed_client(
+        google_api_key=settings.google_api_key,
+        local_model=settings.local_embedding_model,
+    )
 
     processed_count = 0
     ideas_created_count = 0
@@ -351,13 +352,11 @@ async def scoring_agent_task(ctx: dict) -> dict:
             continue
 
         try:
-            embedding: list[float] = []
-            if voyage_client is not None:
-                embed_input = (
-                    f"{article.title}. "
-                    f"{article.structured_summary.story_narrative if article.structured_summary else ''}"
-                )
-                embedding = embed_text(embed_input, voyage_client)
+            embed_input = (
+                f"{article.title}. "
+                f"{article.structured_summary.story_narrative if article.structured_summary else ''}"
+            )
+            embedding: list[float] = embed_text(embed_input, embed_client)
 
             idea_result = generate_ideas(article, anthropic_client, settings.claude_model_heavy)
             sonnet_in += idea_result.input_tokens
@@ -466,6 +465,7 @@ async def creation_agent_task(
     from app.agents.creation.content_generator import generate_content
     from app.agents.creation.finance_flags import detect_finance_flags
     from app.agents.creation.db_writer import write_draft, upsert_cost_log
+    from app.agents.scoring.embedder import embed_text
     from app.utils.slack import send_slack_alert
     from app.utils.logging import format_token_cost, log_agent_decision
     from app.db.models import Idea, DraftCreate, RunLogCreate, TriggerType
@@ -476,10 +476,11 @@ async def creation_agent_task(
 
     anthropic_client = Anthropic(api_key=settings.anthropic_api_key)
 
-    voyage_client = None
-    if settings.voyage_api_key:
-        import voyageai
-        voyage_client = voyageai.Client(api_key=settings.voyage_api_key)
+    from app.agents.embedding.client import make_embed_client
+    embed_client = make_embed_client(
+        google_api_key=settings.google_api_key,
+        local_model=settings.local_embedding_model,
+    )
 
     processed_count = 0
     draft_count = 0
@@ -525,18 +526,17 @@ async def creation_agent_task(
             # Step 3 — Embed idea text and get brand context
             embedding: list[float] = []
             brand_ctx = ""
-            if voyage_client:
-                from app.agents.scoring.embedder import embed_text
-                embed_input = f"{idea.platform.value}: {idea.edited_angle or idea.angle}"
-                embedding = embed_text(embed_input, voyage_client)
+            embed_input = f"{idea.platform.value}: {idea.edited_angle or idea.angle}"
+            embedding = embed_text(embed_input, embed_client)
+            if embedding:
                 brand_ctx = get_brand_context(embedding, idea.platform.value, supabase)
 
             # Step 3b — Retrieve KB context if needed
             kb_context = ""
             if content_type in ("kb_driven", "combined"):
-                if not voyage_client:
+                if not embedding:
                     logger.warning(
-                        "creation_agent_task: KB context requested but Voyage client unavailable",
+                        "creation_agent_task: KB context requested but embedding unavailable",
                         extra={"content_type": content_type, "idea_id": idea_id},
                     )
                     trace_entries.append(log_agent_decision(

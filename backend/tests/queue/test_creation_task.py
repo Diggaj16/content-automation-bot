@@ -6,13 +6,15 @@ from uuid import UUID
 from app.queue.tasks import creation_agent_task
 
 
-def _make_ctx(voyage_key=None):
+def _make_ctx():
     settings = MagicMock()
     settings.anthropic_api_key = "sk-test"
-    settings.voyage_api_key = voyage_key
+    settings.google_api_key = None
+    settings.local_embedding_model = "BAAI/bge-base-en-v1.5"
     settings.claude_model_heavy = "claude-sonnet-4-5"
     settings.daily_cost_alert_usd = 10.0
     settings.slack_webhook_url = None
+    settings.browser_sessions_dir = "~/.config/contentautomation/browser_sessions"
     supabase = MagicMock()
     return {"settings": settings, "supabase": supabase}
 
@@ -44,6 +46,7 @@ async def test_creation_task_processes_one_idea():
 
     with (
         patch("app.queue.tasks.Anthropic"),
+        patch("app.agents.embedding.client.make_embed_client"),
         patch("app.agents.creation.content_generator.generate_content") as mock_gen,
         patch("app.agents.creation.finance_flags.detect_finance_flags", return_value=[]),
         patch("app.agents.creation.db_writer.write_draft", return_value="draft-uuid-001"),
@@ -74,6 +77,7 @@ async def test_creation_task_counts_failure_when_draft_write_fails():
 
     with (
         patch("app.queue.tasks.Anthropic"),
+        patch("app.agents.embedding.client.make_embed_client"),
         patch("app.agents.creation.content_generator.generate_content") as mock_gen,
         patch("app.agents.creation.finance_flags.detect_finance_flags", return_value=[]),
         patch("app.agents.creation.db_writer.write_draft", return_value=None),
@@ -117,6 +121,7 @@ async def test_creation_task_skips_when_generate_returns_none():
 
     with (
         patch("app.queue.tasks.Anthropic"),
+        patch("app.agents.embedding.client.make_embed_client"),
         patch("app.agents.creation.content_generator.generate_content") as mock_gen,
         patch("app.agents.creation.db_writer.upsert_cost_log"),
         patch("app.agents.creation.brand_context.get_brand_context", return_value=""),

@@ -40,13 +40,14 @@ async def upload_kb_file(
         logger.warning("kb: text extraction failed", extra={"source_file": filename, "error": str(exc)})
         raise HTTPException(status_code=500, detail="Failed to extract text from file.")
 
-    voyage_client = None
-    if settings.voyage_api_key:
-        import voyageai
-        voyage_client = voyageai.Client(api_key=settings.voyage_api_key)
+    from app.agents.embedding.client import make_embed_client
+    embed_client = make_embed_client(
+        google_api_key=settings.google_api_key,
+        local_model=settings.local_embedding_model,
+    )
 
     try:
-        chunks_written = ingest_file(filename, text, voyage_client, supabase, voyage_model=settings.voyage_model)
+        chunks_written = ingest_file(filename, text, embed_client, supabase)
     except Exception as exc:
         logger.warning("kb: ingestion failed", extra={"source_file": filename, "error": str(exc)})
         raise HTTPException(status_code=500, detail="Failed to ingest file.")

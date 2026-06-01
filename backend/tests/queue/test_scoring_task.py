@@ -6,7 +6,8 @@ from unittest.mock import MagicMock, patch
 def _make_ctx() -> dict:
     settings = MagicMock()
     settings.anthropic_api_key = "test-key"
-    settings.voyage_api_key = None
+    settings.google_api_key = None
+    settings.local_embedding_model = "BAAI/bge-base-en-v1.5"
     settings.claude_model_heavy = "claude-sonnet-4-5"
     settings.daily_cost_alert_usd = 5.0
     settings.slack_webhook_url = None
@@ -24,7 +25,7 @@ def _make_ctx() -> dict:
 @pytest.mark.asyncio
 async def test_scoring_task_returns_done_with_no_articles():
     ctx = _make_ctx()
-    with patch("app.queue.tasks.Anthropic"):
+    with patch("app.queue.tasks.Anthropic"), patch("app.agents.embedding.client.make_embed_client"):
         from app.queue.tasks import scoring_agent_task
         result = await scoring_agent_task(ctx)
     assert result["status"] == "done"
@@ -36,7 +37,7 @@ async def test_scoring_task_returns_done_with_no_articles():
 @pytest.mark.asyncio
 async def test_scoring_task_writes_run_log():
     ctx = _make_ctx()
-    with patch("app.queue.tasks.Anthropic"):
+    with patch("app.queue.tasks.Anthropic"), patch("app.agents.embedding.client.make_embed_client"):
         from app.queue.tasks import scoring_agent_task
         await scoring_agent_task(ctx)
     table_calls = [str(c) for c in ctx["supabase"].table.call_args_list]
@@ -44,10 +45,10 @@ async def test_scoring_task_writes_run_log():
 
 
 @pytest.mark.asyncio
-async def test_scoring_task_skips_voyage_when_key_is_none():
+async def test_scoring_task_works_without_embedding_key():
     ctx = _make_ctx()
-    ctx["settings"].voyage_api_key = None
-    with patch("app.queue.tasks.Anthropic"):
+    ctx["settings"].google_api_key = None
+    with patch("app.queue.tasks.Anthropic"), patch("app.agents.embedding.client.make_embed_client"):
         from app.queue.tasks import scoring_agent_task
         result = await scoring_agent_task(ctx)
     assert result["status"] == "done"

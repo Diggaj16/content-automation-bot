@@ -23,6 +23,11 @@ def test_settings_is_cached():
     assert s1 is s2
 
 
+def test_google_api_key_optional():
+    from app.config import get_settings
+    settings = get_settings()
+    assert settings.google_api_key is None or isinstance(settings.google_api_key, str)
+
 def test_voyage_api_key_optional():
     from app.config import get_settings
     settings = get_settings()

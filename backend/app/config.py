@@ -24,9 +24,12 @@ class Settings(BaseSettings):
     # Anthropic
     anthropic_api_key: str = Field(..., alias="ANTHROPIC_API_KEY")
 
-    # Voyage AI
+    # Embeddings — Gemini primary, local fastembed fallback
+    google_api_key: Optional[str] = Field(None, alias="GOOGLE_API_KEY")
+    local_embedding_model: str = Field("BAAI/bge-base-en-v1.5", alias="LOCAL_EMBEDDING_MODEL")
+
+    # Legacy Voyage AI (kept so existing .env files don't break on load)
     voyage_api_key: Optional[str] = Field(None, alias="VOYAGE_API_KEY")
-    voyage_model: str = Field("voyage-3", alias="VOYAGE_MODEL")
 
     # Redis
     redis_url: str = Field("redis://localhost:6379", alias="REDIS_URL")
