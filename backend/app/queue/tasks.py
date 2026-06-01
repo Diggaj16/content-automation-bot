@@ -123,6 +123,12 @@ async def research_agent_task(
                     if norm not in seen_set
                 ]
                 skipped_count += len(norm_map) - len(to_fetch)
+
+                # cap per-site to avoid timeout
+                cap = settings.articles_per_site
+                if len(to_fetch) > cap:
+                    to_fetch = sorted(to_fetch, key=lambda x: x[1], reverse=True)[:cap]
+                    skipped_count += len(norm_map) - len(seen_set) - cap
             else:
                 to_fetch = []
 
