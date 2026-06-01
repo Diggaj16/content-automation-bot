@@ -19,7 +19,7 @@ logger = get_logger(__name__)
 
 
 def make_tools(supabase: Client, arq_pool) -> list:
-    """Build and return all 10 orchestrator tool callables."""
+    """Build and return all 16 orchestrator tool callables."""
 
     @tool
     async def trigger_research(topic: Optional[str] = None) -> str:
@@ -290,6 +290,120 @@ def make_tools(supabase: Client, arq_pool) -> list:
             logger.warning("get_run_logs failed", extra={"error": str(exc)})
             return f"Error fetching run logs: {exc}"
 
+    # ── Ideas (Gate 1) ──────────────────────────────────────────────────────
+
+    @tool
+    async def get_ideas(
+        status: str = "pending_approval",
+        platform: Optional[str] = None,
+        limit: int = 10,
+    ) -> str:
+        """Browse content ideas. status: 'pending_approval', 'approved', or 'rejected'.
+        Optionally filter by platform (linkedin, twitter, blog, email).
+        Returns id, angle, platform, score, and date for each idea."""
+        try:
+            query = (
+                supabase.table("ideas")
+                .select("id, angle, platform, score, approval_status, created_at")
+                .eq("approval_status", status)
+                .order("score", desc=True)
+                .limit(limit)
+            )
+            if platform:
+                query = query.eq("platform", platform)
+            resp = query.execute()
+            ideas = resp.data or []
+            if not ideas:
+                return f"No {status.replace('_', ' ')} ideas found."
+            lines = []
+            for i in ideas:
+                score = f"score={i['score']:.1f}" if isinstance(i.get('score'), (int, float)) else "score=?"
+                lines.append(
+                    f"[{i['platform']}] {score} | {i['angle']}\n  id: {i['id']}"
+                )
+            return f"{len(ideas)} {status.replace('_', ' ')} idea(s):\n" + "\n".join(lines)
+        except Exception as exc:
+            logger.warning("get_ideas failed", extra={"error": str(exc)})
+            return f"Error fetching ideas: {exc}"
+
+    @tool
+    async def approve_idea(idea_id: str, edited_angle: Optional[str] = None) -> str:
+        """Approve a Gate 1 idea. Optionally provide an edited_angle to refine the angle before approving.
+        idea_id: the UUID of the idea (from get_ideas output)."""
+        try:
+            payload: dict = {"approval_status": "approved"}
+            if edited_angle:
+                payload["edited_angle"] = edited_angle
+            resp = supabase.table("ideas").update(payload).eq("id", idea_id).execute()
+            if not resp.data:
+                return f"Idea {idea_id!r} not found."
+            angle = resp.data[0].get("angle") or resp.data[0].get("edited_angle") or idea_id
+            return f"✓ Approved idea: {angle!r}"
+        except Exception as exc:
+            logger.warning("approve_idea failed", extra={"idea_id": idea_id, "error": str(exc)})
+            return f"Error approving idea: {exc}"
+
+    @tool
+    async def reject_idea(idea_id: str) -> str:
+        """Reject a Gate 1 idea.
+        idea_id: the UUID of the idea (from get_ideas output)."""
+        try:
+            resp = supabase.table("ideas").update({"approval_status": "rejected"}).eq("id", idea_id).execute()
+            if not resp.data:
+                return f"Idea {idea_id!r} not found."
+            return f"✓ Rejected idea {idea_id[:8]}…"
+        except Exception as exc:
+            logger.warning("reject_idea failed", extra={"idea_id": idea_id, "error": str(exc)})
+            return f"Error rejecting idea: {exc}"
+
+    @tool
+    async def bulk_reject_ideas(idea_ids: list[str]) -> str:
+        """Reject multiple ideas at once. ALWAYS confirm the list with the user before calling this.
+        idea_ids: list of UUID strings from get_ideas output."""
+        if not idea_ids:
+            return "Error: idea_ids must not be empty."
+        count = 0
+        errors = []
+        for idea_id in idea_ids:
+            try:
+                supabase.table("ideas").update({"approval_status": "rejected"}).eq("id", idea_id).execute()
+                count += 1
+            except Exception as exc:
+                errors.append(f"{idea_id[:8]}: {exc}")
+        result = f"✓ Rejected {count}/{len(idea_ids)} idea(s)."
+        if errors:
+            result += f"\nFailed: {'; '.join(errors)}"
+        return result
+
+    @tool
+    async def send_ideas_to_creation(
+        idea_ids: list[str],
+        content_type: str = "news_driven",
+    ) -> str:
+        """Send approved ideas to the creation agent to generate drafts.
+        content_type: 'news_driven', 'kb_driven', or 'combined'.
+        idea_ids: list of approved idea UUIDs."""
+        if not idea_ids:
+            return "Error: idea_ids must not be empty."
+        if content_type not in {"news_driven", "kb_driven", "combined"}:
+            return f"Error: invalid content_type '{content_type}'. Use: news_driven, kb_driven, combined."
+        if arq_pool is None:
+            return "Error: job queue unavailable (Redis not connected)."
+        try:
+            job = await arq_pool.enqueue_job(
+                "creation_agent_task",
+                idea_ids=idea_ids,
+                content_type=content_type,
+            )
+            job_id = job.job_id if job else "unknown"
+            return (
+                f"✓ Creation queued for {len(idea_ids)} idea(s) "
+                f"(content_type={content_type}, job_id={job_id})."
+            )
+        except Exception as exc:
+            logger.warning("send_ideas_to_creation failed", extra={"error": str(exc)})
+            return f"Error triggering creation: {exc}"
+
     return [
         trigger_research,
         trigger_scoring,
@@ -302,4 +416,10 @@ def make_tools(supabase: Client, arq_pool) -> list:
         get_topic_performance,
         get_run_logs,
         login_to_site,
+        # Ideas (Gate 1)
+        get_ideas,
+        approve_idea,
+        reject_idea,
+        bulk_reject_ideas,
+        send_ideas_to_creation,
     ]
