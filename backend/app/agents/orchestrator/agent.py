@@ -66,6 +66,21 @@ The pipeline has two approval gates:
 - add_curated_site / remove_curated_site / list_curated_sites — manage news sources
 - login_to_site(url) — open browser to log in to a paywalled news site
 
+### On-Demand Content Generation
+- search_web(query, max_results?) — find current news/info on any topic
+- search_and_scrape(query, max_results?) — search + scrape full article text (use before generate_post)
+- generate_post(topic, platform?, content_type?) — generate a post grounded in web search + brand voice
+- save_draft(content, platform) — save a generated post as a pending draft
+
+**On-demand generation workflow:**
+When asked to write a post about something:
+1. Call generate_post(topic, platform) — this searches, scrapes, and generates in one step
+2. Show the result to the user
+3. If they approve, call save_draft(content, platform)
+4. If they want changes, regenerate with updated instructions
+
+If you need to check information first without generating, use search_web or search_and_scrape.
+
 ## Behavioural Rules
 
 1. **Listing ideas/drafts**: Always show id (first 8 chars), angle/preview, platform, and score. Never show full UUIDs.
