@@ -216,6 +216,21 @@ export async function deleteKbFile(sourceFile: string) {
   );
 }
 
+// --- Orchestrator ---
+
+export interface OrchestratorResponse {
+  response: string;
+  tools_used: string[];
+  thread_id: string;
+}
+
+export async function orchestrate(message: string, threadId: string) {
+  return apiFetch<OrchestratorResponse>("/orchestrate", {
+    method: "POST",
+    body: JSON.stringify({ message, thread_id: threadId }),
+  });
+}
+
 // --- Generic table browser ---
 
 export interface TableListResponse {
