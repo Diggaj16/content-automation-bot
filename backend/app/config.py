@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     claude_model_heavy: str = Field("claude-sonnet-4-5", alias="CLAUDE_MODEL_HEAVY")
     claude_model_light: str = Field("claude-haiku-4-5", alias="CLAUDE_MODEL_LIGHT")
 
+    # Orchestrator
+    orchestrator_model: str = Field("claude-sonnet-4-6", alias="ORCHESTRATOR_MODEL")
+
     # Research agent
     article_min_words: int = Field(400, gt=0, alias="ARTICLE_MIN_WORDS") #gt=0
     article_max_age_days: int = Field(7, gt=0, alias="ARTICLE_MAX_AGE_DAYS") #gt=0
