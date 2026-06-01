@@ -239,6 +239,8 @@ export interface TableListResponse {
   count: number | null;
   limit: number;
   offset: number;
+  columns: string[];      // column names from first row (excludes vector columns)
+  default_sort: string;   // backend-recommended sort column for this table
 }
 
 export async function listTables() {
