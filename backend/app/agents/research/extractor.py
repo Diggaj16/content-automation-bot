@@ -16,6 +16,8 @@ from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
 
 from pydantic import BaseModel
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
+from crawl4ai.content_filter_strategy import PruningContentFilter
+from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
 
 from app.utils.logging import get_logger
 
@@ -86,10 +88,15 @@ async def fetch_article(
     normalized = normalize_url(url)
 
     browser_cfg = BrowserConfig(headless=True, verbose=False)
+    # PruningContentFilter removes nav, footer, ads, and other low-density blocks
+    # so that full_text contains only the article body, not the entire page.
+    # threshold=0.45 is a good balance — lower keeps more content, higher is stricter.
+    _content_filter = PruningContentFilter(threshold=0.45, threshold_type="fixed")
     run_cfg = CrawlerRunConfig(
         cache_mode=CacheMode.BYPASS,
         page_timeout=timeout_ms,
-        word_count_threshold=1,
+        word_count_threshold=10,  # skip tiny blocks (nav labels, button text, etc.)
+        markdown_generator=DefaultMarkdownGenerator(content_filter=_content_filter),
     )
 
     try:
@@ -123,7 +130,8 @@ async def fetch_article(
             paywall_detected=True,
         )
 
-    full_text: str = result.markdown or ""
+    # fit_markdown is the pruned article body — fall back to full markdown only if empty
+    full_text: str = result.fit_markdown or result.markdown or ""
     word_count = len(full_text.split())
     paywall_detected = word_count < _PAYWALL_WORD_THRESHOLD
 

@@ -75,10 +75,13 @@ def _make_mock_crawler(
     metadata: dict | None = None,
     success: bool = True,
     side_effect: Exception | None = None,
+    fit_markdown: str | None = None,
 ) -> AsyncMock:
     mock_result = MagicMock()
     mock_result.success = success
     mock_result.markdown = markdown
+    # fit_markdown is what PruningContentFilter produces; None means "use full markdown fallback"
+    mock_result.fit_markdown = fit_markdown
     mock_result.metadata = metadata or {}
 
     mock_instance = AsyncMock()

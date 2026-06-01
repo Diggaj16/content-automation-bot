@@ -41,6 +41,12 @@ _TABLE_SORT_COLUMN: dict[str, str] = {
     "topic_performance_model": "updated_at",
 }
 
+# For these tables, enrich rows with a joined lookup to show human-readable context
+# key = table_name, value = (fk_column, lookup_table, lookup_id_col, display_cols)
+_ROW_ENRICHMENTS: dict[str, tuple[str, str, str, list[str]]] = {
+    "ideas": ("raw_content_id", "raw_content", "id", ["title", "source_name"]),
+}
+
 VECTOR_COLUMNS = {"brand_memory": "embedding", "knowledge_base": "embedding"}
 
 
@@ -92,6 +98,32 @@ def list_rows(
         if exclude_col:
             for row in rows:
                 row.pop(exclude_col, None)
+
+        # Enrich rows with human-readable context from related tables
+        enrichment = _ROW_ENRICHMENTS.get(table_name)
+        if enrichment and rows:
+            fk_col, lookup_table, lookup_id_col, display_cols = enrichment
+            fk_ids = list({row[fk_col] for row in rows if row.get(fk_col)})
+            if fk_ids:
+                try:
+                    sel = ", ".join([lookup_id_col] + display_cols)
+                    lookup_resp = (
+                        supabase.table(lookup_table)
+                        .select(sel)
+                        .in_(lookup_id_col, fk_ids)
+                        .execute()
+                    )
+                    lookup_map: dict = {
+                        r[lookup_id_col]: {c: r.get(c) for c in display_cols}
+                        for r in (lookup_resp.data or [])
+                    }
+                    for row in rows:
+                        fk_val = row.get(fk_col)
+                        if fk_val and fk_val in lookup_map:
+                            for col, val in lookup_map[fk_val].items():
+                                row[f"_src_{col}"] = val
+                except Exception:
+                    pass  # enrichment is best-effort; never fail the main request
 
         columns = list(rows[0].keys()) if rows else []
 
