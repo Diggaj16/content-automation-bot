@@ -20,6 +20,8 @@ dependencies = [
     "crawl4ai>=0.4.0,<1.0",
     "fastapi>=0.111.0",
     "uvicorn[standard]>=0.29.0",
+    "PyPDF2>=3.0.0",
+    "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]
