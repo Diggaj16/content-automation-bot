@@ -109,10 +109,25 @@ def normalize_url(url: str) -> str:
     ))
 
 
+def _profile_dir_for(url: str, sessions_dir: Optional[str]) -> Optional[str]:
+    """Return the persistent browser profile path for this URL's domain if it exists.
+
+    Only returns a path when the user has already logged in (profile dir present).
+    A missing profile means no saved session — scrape without authentication.
+    """
+    if not sessions_dir:
+        return None
+    from pathlib import Path
+    domain = urlparse(url).netloc.lstrip("www.")
+    path = Path(sessions_dir).expanduser() / domain
+    return str(path) if path.exists() else None
+
+
 async def fetch_article(
     url: str,
     *,
     timeout_ms: int = 30_000,
+    sessions_dir: Optional[str] = None,
 ) -> ArticleContent:
     """
     Fetch and extract the full text of a single article URL.
@@ -125,7 +140,16 @@ async def fetch_article(
     """
     normalized = normalize_url(url)
 
-    browser_cfg = BrowserConfig(headless=True, verbose=False)
+    profile_dir = _profile_dir_for(url, sessions_dir)
+    browser_cfg = BrowserConfig(
+        headless=True,
+        verbose=False,
+        user_data_dir=profile_dir,            # None = fresh context; str = use saved session
+        use_persistent_context=bool(profile_dir),
+    )
+    if profile_dir:
+        logger.info("fetch_article: using saved login session", extra={"domain": urlparse(url).netloc})
+
     # PruningContentFilter removes nav, footer, ads, and other low-density blocks
     # so that full_text contains only the article body, not the entire page.
     # threshold=0.45 is a good balance — lower keeps more content, higher is stricter.

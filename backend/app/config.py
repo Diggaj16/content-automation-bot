@@ -55,6 +55,13 @@ class Settings(BaseSettings):
     # Decision summaries
     rejection_batch_size: int = Field(5, gt=0, alias="REJECTION_BATCH_SIZE")
 
+    # Browser sessions — persistent login profiles for paywalled sites.
+    # Login once via the orchestrator; cookies are saved here and reused on every scrape.
+    browser_sessions_dir: str = Field(
+        "~/.config/contentautomation/browser_sessions",
+        alias="BROWSER_SESSIONS_DIR",
+    )
+
     # Site health
     site_failure_pause_threshold: int = Field(5,gt=0, alias="SITE_FAILURE_PAUSE_THRESHOLD") #gt=0
 

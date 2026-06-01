@@ -44,6 +44,27 @@ def make_tools(supabase: Client, arq_pool) -> list:
             logger.warning("trigger_scoring failed", extra={"error": str(exc)})
             return f"Error triggering scoring: {exc}"
 
+    @tool
+    async def login_to_site(site_url: str) -> str:
+        """Open a browser window so the user can log in to a paywalled site.
+        A visible browser will appear on this machine — log in normally.
+        The session (cookies) is saved automatically; all future scrapes for this
+        domain will use it without asking you to log in again.
+        site_url: full URL to open, e.g. https://www.livemint.com or https://economictimes.com/login"""
+        try:
+            from urllib.parse import urlparse
+            domain = urlparse(site_url).netloc.lstrip("www.")
+            job = await arq_pool.enqueue_job("login_site_task", login_url=site_url)
+            job_id = job.job_id if job else "unknown"
+            return (
+                f"Browser opening for {domain} (job_id={job_id}). "
+                f"A browser window will appear — log in there. "
+                f"Your session is saved automatically; you won't need to log in again unless it expires."
+            )
+        except Exception as exc:
+            logger.warning("login_to_site failed", extra={"error": str(exc)})
+            return f"Error opening browser for login: {exc}"
+
     _VALID_CONTENT_TYPES = {"news_driven", "kb_driven", "combined"}
 
     @tool
@@ -280,4 +301,5 @@ def make_tools(supabase: Client, arq_pool) -> list:
         list_curated_sites,
         get_topic_performance,
         get_run_logs,
+        login_to_site,
     ]

@@ -101,13 +101,30 @@ async def research_agent_task(
                     if is_url_seen(normalized, supabase):
                         continue
 
-                    content = await fetch_article(link.url)
+                    content = await fetch_article(
+                        link.url,
+                        sessions_dir=settings.browser_sessions_dir,
+                    )
 
                     if content.paywall_detected:
                         trace_entries.append(log_agent_decision(
                             logger, "skip_paywall", "Paywall or thin content",
                             {"url": link.url, "word_count": content.word_count},
                         ))
+                        # Alert only when no saved login session exists for this domain
+                        from pathlib import Path
+                        from urllib.parse import urlparse as _urlparse
+                        _domain = _urlparse(link.url).netloc.lstrip("www.")
+                        _has_session = (
+                            Path(settings.browser_sessions_dir).expanduser() / _domain
+                        ).exists()
+                        if not _has_session:
+                            send_slack_alert(
+                                f"🔐 *Paywall hit* on `{_domain}`\n"
+                                f"Tell the orchestrator: *login to {link.url}*\n"
+                                f"A browser will open — log in once and all future scrapes will use your saved session.",
+                                settings.slack_webhook_url,
+                            )
                         failure_count += 1
                         continue
 
@@ -589,6 +606,64 @@ async def creation_agent_task(
         "duration_seconds": round(duration, 2),
         "cost_usd": round(total_usd, 6),
     }
+
+
+async def login_site_task(ctx: dict, *, login_url: str) -> dict:
+    """
+    Open a VISIBLE browser at login_url so the user can log in manually.
+
+    The browser uses a persistent profile — cookies are saved automatically on close.
+    All future fetch_article calls for this domain reuse the saved session.
+    Triggered via the orchestrator 'login_to_site' tool.
+    """
+    from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
+    from pathlib import Path
+    from urllib.parse import urlparse
+
+    settings = ctx["settings"]
+    domain = urlparse(login_url).netloc.lstrip("www.")
+    profile_dir = Path(settings.browser_sessions_dir).expanduser() / domain
+    profile_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info("login_site_task: opening browser", extra={"domain": domain, "url": login_url})
+
+    browser_cfg = BrowserConfig(
+        headless=False,              # visible — user must interact
+        verbose=False,
+        user_data_dir=str(profile_dir),
+        use_persistent_context=True, # automatically saves cookies/localStorage on close
+    )
+
+    # Waits until the URL changes away from the login page (i.e. redirect after auth)
+    # or times out after 5 minutes.
+    _wait_js = """
+(async () => {
+    const startUrl = window.location.href;
+    const start = Date.now();
+    while (Date.now() - start < 300000) {
+        const cur = window.location.href;
+        if (cur !== startUrl && !/login|signin|sign-in/i.test(cur)) break;
+        await new Promise(r => setTimeout(r, 2000));
+    }
+    await new Promise(r => setTimeout(r, 1500));
+})();
+"""
+
+    run_cfg = CrawlerRunConfig(
+        cache_mode=CacheMode.BYPASS,
+        page_timeout=320_000,        # 5 min 20 sec — must exceed JS wait time
+        js_code=_wait_js,
+        delay_before_return_html=1500,
+    )
+
+    try:
+        async with AsyncWebCrawler(config=browser_cfg) as crawler:
+            await crawler.arun(url=login_url, config=run_cfg)
+        logger.info("login_site_task: session saved", extra={"domain": domain})
+        return {"status": "done", "domain": domain, "profile_dir": str(profile_dir)}
+    except Exception as exc:
+        logger.warning("login_site_task failed", extra={"domain": domain, "error": str(exc)})
+        return {"status": "error", "domain": domain, "error": str(exc)}
 
 
 async def publishing_agent_task(ctx: dict) -> dict:

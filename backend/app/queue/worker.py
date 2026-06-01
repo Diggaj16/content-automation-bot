@@ -14,6 +14,7 @@ from arq.connections import RedisSettings
 from app.queue.tasks import (
     analytics_agent_task,
     creation_agent_task,
+    login_site_task,
     publishing_agent_task,
     research_agent_task,
     scoring_agent_task,
@@ -61,6 +62,7 @@ class WorkerSettings:
         creation_agent_task,
         publishing_agent_task,
         analytics_agent_task,
+        login_site_task,
     ]
     on_startup  = startup
     on_shutdown = shutdown
