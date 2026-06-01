@@ -13,9 +13,99 @@ const platformColors: Record<string, string> = {
 function PlatformBadge({ platform }: { platform: string }) {
   const cls = platformColors[platform] ?? "bg-gray-100 text-gray-700";
   return (
-    <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${cls}`}>
+    <span
+      className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${cls}`}
+    >
       {platform}
     </span>
+  );
+}
+
+function SourceArticlePanel({ article }: { article: NonNullable<Idea["source_article"]> }) {
+  const [showFull, setShowFull] = useState(false);
+  const summary = article.structured_summary;
+
+  return (
+    <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 space-y-2 text-xs">
+      <div className="flex items-start justify-between gap-2">
+        <div className="font-medium text-gray-900 text-sm">{article.title}</div>
+        <span className="text-gray-400 whitespace-nowrap text-[10px]">
+          {article.word_count} words
+        </span>
+      </div>
+
+      <div className="flex items-center gap-2 text-gray-500 flex-wrap">
+        <span>{article.source_name}</span>
+        <span>|</span>
+        <a
+          href={article.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-blue-600 hover:underline truncate max-w-md"
+        >
+          {article.url}
+        </a>
+        {article.pre_score != null && (
+          <>
+            <span>|</span>
+            <span>Pre-score: {article.pre_score.toFixed(1)}</span>
+          </>
+        )}
+        {article.vision_fallback_used && (
+          <span className="bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded">
+            Vision fallback
+          </span>
+        )}
+        {article.paywall_detected && (
+          <span className="bg-red-100 text-red-600 px-1.5 py-0.5 rounded">
+            Paywall detected
+          </span>
+        )}
+      </div>
+
+      {summary && (
+        <div className="space-y-1.5 pt-1 border-t border-gray-200">
+          <div>
+            <span className="font-semibold text-gray-700">Story: </span>
+            <span className="text-gray-600">{summary.story_narrative}</span>
+          </div>
+          {summary.key_data_points.length > 0 && (
+            <div>
+              <span className="font-semibold text-gray-700">Key data: </span>
+              <span className="text-gray-600">
+                {summary.key_data_points.join(" | ")}
+              </span>
+            </div>
+          )}
+          {summary.mechanism && (
+            <div>
+              <span className="font-semibold text-gray-700">Mechanism: </span>
+              <span className="text-gray-600">{summary.mechanism}</span>
+            </div>
+          )}
+          {summary.implications && (
+            <div>
+              <span className="font-semibold text-gray-700">Implications: </span>
+              <span className="text-gray-600">{summary.implications}</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      <div>
+        <button
+          onClick={() => setShowFull((v) => !v)}
+          className="text-blue-600 hover:underline text-xs"
+        >
+          {showFull ? "Hide scraped text" : "Show full scraped text"}
+        </button>
+        {showFull && (
+          <pre className="mt-2 bg-white border border-gray-200 rounded p-2 max-h-64 overflow-auto whitespace-pre-wrap text-xs text-gray-700 leading-relaxed">
+            {article.full_text}
+          </pre>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -28,7 +118,8 @@ function IdeaCard({
   onAction: (id: string) => void;
   onApproved: (id: string) => void;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  const [showReasoning, setShowReasoning] = useState(false);
+  const [showArticle, setShowArticle] = useState(false);
   const [approving, setApproving] = useState(false);
   const [editedAngle, setEditedAngle] = useState(idea.angle);
   const [busy, setBusy] = useState(false);
@@ -79,6 +170,11 @@ function IdeaCard({
               Recent coverage
             </span>
           )}
+          {idea.source_article && (
+            <span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-500">
+              {idea.source_article.source_name}
+            </span>
+          )}
         </div>
         <span className="text-xs text-gray-400 whitespace-nowrap">
           {new Date(idea.created_at).toLocaleDateString()}
@@ -87,20 +183,34 @@ function IdeaCard({
 
       <p className="text-sm font-medium text-gray-900">{idea.angle}</p>
 
-      {idea.agent_reasoning && (
-        <div>
+      {/* Toggle buttons row */}
+      <div className="flex gap-3">
+        {idea.agent_reasoning && (
           <button
-            onClick={() => setExpanded((v) => !v)}
+            onClick={() => setShowReasoning((v) => !v)}
             className="text-xs text-blue-600 hover:underline"
           >
-            {expanded ? "Hide reasoning" : "Show reasoning"}
+            {showReasoning ? "Hide reasoning" : "Show reasoning"}
           </button>
-          {expanded && (
-            <p className="mt-1 text-xs text-gray-600 bg-gray-50 rounded p-2 leading-relaxed">
-              {idea.agent_reasoning}
-            </p>
-          )}
-        </div>
+        )}
+        {idea.source_article && (
+          <button
+            onClick={() => setShowArticle((v) => !v)}
+            className="text-xs text-green-700 hover:underline font-medium"
+          >
+            {showArticle ? "Hide scraped article" : "View scraped article"}
+          </button>
+        )}
+      </div>
+
+      {showReasoning && idea.agent_reasoning && (
+        <p className="text-xs text-gray-600 bg-gray-50 rounded p-2 leading-relaxed">
+          {idea.agent_reasoning}
+        </p>
+      )}
+
+      {showArticle && idea.source_article && (
+        <SourceArticlePanel article={idea.source_article} />
       )}
 
       {approving ? (
@@ -114,9 +224,7 @@ function IdeaCard({
             value={editedAngle}
             onChange={(e) => setEditedAngle(e.target.value)}
           />
-          {localError && (
-            <p className="text-xs text-red-600">{localError}</p>
-          )}
+          {localError && <p className="text-xs text-red-600">{localError}</p>}
           <div className="flex gap-2">
             <button
               onClick={handleApprove}
@@ -167,12 +275,13 @@ export default function IdeasPage() {
   const [approvedIds, setApprovedIds] = useState<string[]>([]);
   const [creationMsg, setCreationMsg] = useState<string | null>(null);
   const [sendingToCreation, setSendingToCreation] = useState(false);
+  const [contentType, setContentType] = useState<string>("news_driven");
 
   const fetchIdeas = async () => {
     setLoading(true);
     setError(null);
     try {
-      setIdeas(await getIdeas("pending"));
+      setIdeas(await getIdeas("pending_approval"));
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to load ideas");
     } finally {
@@ -242,24 +351,43 @@ export default function IdeasPage() {
       </div>
 
       {approvedIds.length > 0 && (
-        <div className="flex items-center gap-3 mt-4">
+        <div className="flex items-center gap-3 mt-4 flex-wrap">
+          <select
+            value={contentType}
+            onChange={(e) => setContentType(e.target.value)}
+            className="text-sm border border-gray-300 rounded px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="news_driven">News-driven</option>
+            <option value="kb_driven">KB-driven</option>
+          </select>
           <button
             onClick={async () => {
-              setSendingToCreation(true); setCreationMsg(null);
+              setSendingToCreation(true);
+              setCreationMsg(null);
               try {
-                const r = await triggerCreation(approvedIds);
-                setCreationMsg(`Creation queued for ${r.idea_count} idea(s) — job_id: ${r.job_id ?? "n/a"}`);
+                const r = await triggerCreation(approvedIds, contentType);
+                setCreationMsg(
+                  `Creation queued for ${r.idea_count} idea(s) as ${r.content_type} — job_id: ${r.job_id ?? "n/a"}`
+                );
                 setApprovedIds([]);
               } catch (e: unknown) {
-                setCreationMsg(e instanceof Error ? `Error: ${e.message}` : "Failed");
-              } finally { setSendingToCreation(false); }
+                setCreationMsg(
+                  e instanceof Error ? `Error: ${e.message}` : "Failed"
+                );
+              } finally {
+                setSendingToCreation(false);
+              }
             }}
             disabled={sendingToCreation}
             className="bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-sm px-4 py-2 rounded"
           >
-            {sendingToCreation ? "Sending…" : `Send ${approvedIds.length} approved idea(s) to Creation`}
+            {sendingToCreation
+              ? "Sending..."
+              : `Send ${approvedIds.length} approved idea(s) to Creation`}
           </button>
-          {creationMsg && <p className="text-sm text-gray-600">{creationMsg}</p>}
+          {creationMsg && (
+            <p className="text-sm text-gray-600">{creationMsg}</p>
+          )}
         </div>
       )}
     </div>
