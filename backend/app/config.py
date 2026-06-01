@@ -55,6 +55,9 @@ class Settings(BaseSettings):
     # Scoring
     max_ideas_per_site: int = Field(5, gt=0, alias="MAX_IDEAS_PER_SITE")
 
+    # Research — cap articles fetched per site per run to avoid timeout
+    articles_per_site: int = Field(5, gt=0, alias="ARTICLES_PER_SITE")
+
     # Decision summaries
     rejection_batch_size: int = Field(5, gt=0, alias="REJECTION_BATCH_SIZE")
 

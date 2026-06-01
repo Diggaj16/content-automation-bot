@@ -32,3 +32,9 @@ def test_voyage_api_key_optional():
     from app.config import get_settings
     settings = get_settings()
     assert settings.voyage_api_key is None or isinstance(settings.voyage_api_key, str)
+
+def test_articles_per_site_default():
+    from app.config import get_settings
+    settings = get_settings()
+    assert settings.articles_per_site == 5
+    assert isinstance(settings.articles_per_site, int)
