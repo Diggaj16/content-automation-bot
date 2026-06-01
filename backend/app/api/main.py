@@ -19,6 +19,7 @@ logger = get_logger(__name__)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Initialise shared state on startup; clean up on shutdown."""
     app.state.arq_pool = None
+    app.state.orchestrator_agent = None
     try:
         import arq
         from app.queue.worker import WorkerSettings
@@ -74,6 +75,9 @@ def create_app() -> FastAPI:
 
     from app.api.routers.knowledge_base import router as kb_router
     _app.include_router(kb_router)
+
+    from app.api.routers.orchestrator import router as orchestrator_router
+    _app.include_router(orchestrator_router)
 
     return _app
 
