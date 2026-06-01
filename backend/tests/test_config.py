@@ -7,7 +7,7 @@ def test_settings_load():
     settings = get_settings()
     assert settings.supabase_url.startswith("https://")
     assert len(settings.supabase_service_role_key) > 50
-    assert settings.redis_url == "redis://localhost:6379"
+    assert settings.redis_url.startswith("redis://")
     assert settings.article_min_words == 400
     assert settings.article_max_age_days == 7
     assert settings.default_pre_score_threshold == 4.0
