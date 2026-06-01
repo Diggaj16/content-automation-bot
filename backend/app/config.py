@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     google_api_key: Optional[str] = Field(None, alias="GOOGLE_API_KEY")
     local_embedding_model: str = Field("BAAI/bge-base-en-v1.5", alias="LOCAL_EMBEDDING_MODEL")
 
+    # Web search — Tavily primary (optional), DuckDuckGo fallback (no key needed)
+    tavily_api_key: Optional[str] = Field(None, alias="TAVILY_API_KEY")
+
     # Legacy Voyage AI (kept so existing .env files don't break on load)
     voyage_api_key: Optional[str] = Field(None, alias="VOYAGE_API_KEY")
 
