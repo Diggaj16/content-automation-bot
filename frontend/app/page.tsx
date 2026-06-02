@@ -18,6 +18,7 @@ export default function DashboardPage() {
   } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [triggerError, setTriggerError] = useState<string | null>(null);
 
   const research = useJobStatus();
   const scoring = useJobStatus();
@@ -45,21 +46,23 @@ export default function DashboardPage() {
 
   const handleTriggerResearch = async () => {
     research.reset();
+    setTriggerError(null);
     try {
       const r = await triggerResearch();
       if (r.job_id) research.start(r.job_id, "research", "Research");
     } catch (e: unknown) {
-      // show the API error inline
+      setTriggerError(e instanceof Error ? e.message : "Failed to trigger research");
     }
   };
 
   const handleTriggerScoring = async () => {
     scoring.reset();
+    setTriggerError(null);
     try {
       const r = await triggerScoring();
       if (r.job_id) scoring.start(r.job_id, "scoring", "Scoring");
     } catch (e: unknown) {
-      // show the API error inline
+      setTriggerError(e instanceof Error ? e.message : "Failed to trigger scoring");
     }
   };
 
@@ -117,6 +120,11 @@ export default function DashboardPage() {
       {error && (
         <div className="px-4 py-3 rounded-md text-sm bg-red-50 text-red-700 border border-red-200">
           {error}
+        </div>
+      )}
+      {triggerError && (
+        <div className="px-4 py-3 rounded-md text-sm bg-red-50 text-red-700 border border-red-200">
+          {triggerError}
         </div>
       )}
 

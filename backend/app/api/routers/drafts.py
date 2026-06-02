@@ -12,8 +12,11 @@ from supabase import Client
 
 from app.api.deps import get_supabase
 from app.db.models import DraftApproval, DraftStatus
+from app.utils.logging import get_logger
 
 router = APIRouter(prefix="/drafts", tags=["Gate 2 — Drafts"])
+
+logger = get_logger(__name__)
 
 
 @router.get("")
@@ -33,7 +36,8 @@ def list_drafts(
         resp = query.execute()
         return resp.data or []
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        logger.warning("list_drafts failed", extra={"error": str(exc)})
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.patch("/{draft_id}")
@@ -62,4 +66,5 @@ def approve_draft(
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        logger.warning("approve_draft failed", extra={"draft_id": str(draft_id), "error": str(exc)})
+        raise HTTPException(status_code=500, detail="Internal server error")

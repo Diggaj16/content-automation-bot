@@ -103,8 +103,10 @@ def _is_safe_url(url: str) -> bool:
             addr = ipaddress.ip_address(host)
             return addr.is_global and not addr.is_private and not addr.is_loopback and not addr.is_link_local
         except ValueError:
-            # Not a literal IP — hostname DNS lookup would be needed; allow it
-            # (block only when host IS a literal private/loopback IP)
+            # Not a literal IP — block well-known internal hostnames explicitly
+            _BLOCKED_HOSTNAMES = {"localhost", "ip6-localhost", "ip6-loopback"}
+            if host.lower() in _BLOCKED_HOSTNAMES or host.startswith("169.254."):
+                return False
             return True
     except Exception:
         return True  # on any parse error, allow — don't block legitimate URLs

@@ -58,7 +58,8 @@ def list_subscribers(
         resp = q.execute()
         return resp.data or []
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        logger.warning("list_subscribers failed", extra={"error": str(exc)})
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/subscribers", status_code=201)
@@ -79,7 +80,8 @@ def add_subscriber(
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        logger.warning("add_subscriber: duplicate check failed", extra={"error": str(exc)})
+        raise HTTPException(status_code=500, detail="Internal server error")
 
     try:
         payload: dict = {
@@ -97,7 +99,8 @@ def add_subscriber(
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        logger.warning("add_subscriber: insert failed", extra={"error": str(exc)})
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.patch("/subscribers/{sub_id}")
@@ -126,7 +129,8 @@ def update_subscriber(
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        logger.warning("update_subscriber failed", extra={"sub_id": str(sub_id), "error": str(exc)})
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.delete("/subscribers/{sub_id}")
@@ -147,7 +151,8 @@ def delete_subscriber(
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        logger.warning("delete_subscriber failed", extra={"sub_id": str(sub_id), "error": str(exc)})
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/unsubscribe", response_class=HTMLResponse)
@@ -163,7 +168,8 @@ def unsubscribe(
             .execute()
         )
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        logger.warning("unsubscribe: lookup failed", extra={"error": str(exc)})
+        raise HTTPException(status_code=500, detail="Internal server error")
 
     if not resp.data:
         return HTMLResponse(

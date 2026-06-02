@@ -128,7 +128,10 @@ export default function GlobalJobMonitor() {
                 {job.label}
               </span>
               <button
-                onClick={() => removeJob(job.job_id)}
+                onClick={() => {
+                  removeJob(job.job_id);
+                  setJobs(prev => prev.filter(j => j.job_id !== job.job_id));
+                }}
                 className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-gray-500 text-[10px] flex-shrink-0"
               >
                 ✕

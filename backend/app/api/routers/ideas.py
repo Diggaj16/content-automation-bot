@@ -18,6 +18,8 @@ from app.utils.logging import get_logger
 
 router = APIRouter(prefix="/ideas", tags=["Gate 1 — Ideas"])
 
+logger = get_logger(__name__)
+
 
 @router.get("")
 def list_ideas(
@@ -59,7 +61,8 @@ def list_ideas(
 
         return ideas
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        logger.warning("list_ideas failed", extra={"error": str(exc)})
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.patch("/{idea_id}")
@@ -86,7 +89,8 @@ def approve_idea(
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        logger.warning("approve_idea failed", extra={"idea_id": str(idea_id), "error": str(exc)})
+        raise HTTPException(status_code=500, detail="Internal server error")
 
     if payload.approval_status == ApprovalStatus.REJECTED:
         _maybe_generate_summary(supabase, settings)

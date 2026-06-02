@@ -50,7 +50,6 @@ def create_app() -> FastAPI:
         description="Human approval gates and agent trigger endpoints",
         version="0.1.0",
         lifespan=lifespan,
-        dependencies=[Depends(verify_api_key)],  # ← applied to every route
     )
 
     _app.add_middleware(
@@ -61,26 +60,28 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    _auth = [Depends(verify_api_key)]
+
     from app.api.routers.ideas import router as ideas_router
-    _app.include_router(ideas_router)
+    _app.include_router(ideas_router, dependencies=_auth)
 
     from app.api.routers.drafts import router as drafts_router
-    _app.include_router(drafts_router)
+    _app.include_router(drafts_router, dependencies=_auth)
 
     from app.api.routers.triggers import router as triggers_router
-    _app.include_router(triggers_router)
+    _app.include_router(triggers_router, dependencies=_auth)
 
     from app.api.routers.tables import router as tables_router
-    _app.include_router(tables_router)
+    _app.include_router(tables_router, dependencies=_auth)
 
     from app.api.routers.subscribers import router as subscribers_router
-    _app.include_router(subscribers_router)
+    _app.include_router(subscribers_router)  # no auth — unsubscribe is a public link
 
     from app.api.routers.knowledge_base import router as kb_router
-    _app.include_router(kb_router)
+    _app.include_router(kb_router, dependencies=_auth)
 
     from app.api.routers.orchestrator import router as orchestrator_router
-    _app.include_router(orchestrator_router)
+    _app.include_router(orchestrator_router, dependencies=_auth)
 
     return _app
 

@@ -21,7 +21,8 @@ const MAX_AGE_MS = 4 * 60 * 60 * 1000; // keep last 4h
 function read(): JobRecord[] {
   if (typeof window === "undefined") return [];
   try {
-    return JSON.parse(localStorage.getItem(STORE_KEY) ?? "[]");
+    const parsed = JSON.parse(localStorage.getItem(STORE_KEY) ?? "[]");
+    return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
   }

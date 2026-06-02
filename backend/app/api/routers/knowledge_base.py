@@ -31,7 +31,11 @@ async def upload_kb_file(
     if ext not in _ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=422, detail=f"Only PDF and TXT files are accepted. Got: {ext!r}")
 
+    MAX_KB_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
     content_bytes = await file.read()
+    if len(content_bytes) > MAX_KB_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="File too large (max 50 MB)")
+
     try:
         text = extract_text(filename, content_bytes)
     except ValueError as exc:
