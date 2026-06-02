@@ -7,7 +7,7 @@ Run locally (from backend/ with venv active):
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.utils.logging import get_logger
@@ -43,11 +43,14 @@ def create_app() -> FastAPI:
     Factory function — call this to obtain a configured FastAPI instance.
     Importable without side-effects (lifespan runs only when serving).
     """
+    from app.api.deps import verify_api_key
+
     _app = FastAPI(
         title="Content Automation API",
         description="Human approval gates and agent trigger endpoints",
         version="0.1.0",
         lifespan=lifespan,
+        dependencies=[Depends(verify_api_key)],  # ← applied to every route
     )
 
     _app.add_middleware(

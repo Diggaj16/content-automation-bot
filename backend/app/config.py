@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     # Web search — Tavily primary (optional), DuckDuckGo fallback (no key needed)
     tavily_api_key: Optional[str] = Field(None, alias="TAVILY_API_KEY")
 
+    # API security — set API_KEY env var to require X-Api-Key header on all routes
+    api_key: Optional[str] = Field(None, alias="API_KEY")
+
     # Legacy Voyage AI (kept so existing .env files don't break on load)
     voyage_api_key: Optional[str] = Field(None, alias="VOYAGE_API_KEY")
 
