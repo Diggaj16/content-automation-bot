@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import useSWR from "swr";
 import { getIdeas, approveIdea, triggerCreation, type Idea } from "../lib/api";
 import { useJobStatus } from "../hooks/useJobStatus";
 
@@ -24,7 +25,7 @@ function PlatformBadge({ platform }: { platform: string }) {
 
 // ─── source article panel ─────────────────────────────────────────────────────
 
-function SourceArticlePanel({ article }: { article: NonNullable<Idea["source_article"]> }) {
+const SourceArticlePanel = React.memo(function SourceArticlePanel({ article }: { article: NonNullable<Idea["source_article"]> }) {
   const [showFull, setShowFull] = useState(false);
   const summary = article.structured_summary;
 
@@ -80,11 +81,11 @@ function SourceArticlePanel({ article }: { article: NonNullable<Idea["source_art
       </div>
     </div>
   );
-}
+});
 
 // ─── idea card (pending only) ─────────────────────────────────────────────────
 
-function IdeaCard({
+const IdeaCard = React.memo(function IdeaCard({
   idea,
   onAction,
   onApproved,
@@ -210,11 +211,11 @@ function IdeaCard({
       )}
     </div>
   );
-}
+});
 
 // ─── read-only row (approved / rejected tabs) ─────────────────────────────────
 
-function ReadOnlyIdeaRow({ idea }: { idea: Idea }) {
+const ReadOnlyIdeaRow = React.memo(function ReadOnlyIdeaRow({ idea }: { idea: Idea }) {
   return (
     <div className="flex items-center gap-3 py-2.5 px-4 bg-white border border-gray-100 rounded-lg">
       <PlatformBadge platform={idea.platform} />
@@ -231,7 +232,7 @@ function ReadOnlyIdeaRow({ idea }: { idea: Idea }) {
       </span>
     </div>
   );
-}
+});
 
 // ─── types ────────────────────────────────────────────────────────────────────
 
@@ -325,6 +326,10 @@ export default function IdeasPage() {
     setIdeas((prev) => prev.filter((i) => i.id !== id));
     showToast("Action recorded.");
   }, [showToast]);
+
+  const handleApproved = useCallback((id: string) => {
+    setApprovedIds((prev) => [...prev, id]);
+  }, []);
 
   const handleRejectAll = async () => {
     if (!confirm(
@@ -480,7 +485,7 @@ export default function IdeasPage() {
                 key={idea.id}
                 idea={idea}
                 onAction={handleAction}
-                onApproved={(id) => setApprovedIds((prev) => [...prev, id])}
+                onApproved={handleApproved}
               />
             ))
           : displayedIdeas.map((idea) => (
