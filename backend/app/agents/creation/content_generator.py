@@ -17,6 +17,7 @@ from app.utils.logging import get_logger
 logger = get_logger(__name__)
 
 _MAX_OUTPUT_TOKENS = 2048
+_MAX_CONTEXT_CHARS = 4000  # per-source context cap to avoid token overflow
 
 _SYSTEM_PROMPT = (
     "You are a content writer for an Indian finance newsletter. "
@@ -102,6 +103,11 @@ def generate_content(
     angle = idea.edited_angle or idea.angle
     platform = idea.platform.value
     guide = _PLATFORM_GUIDES.get(platform, _PLATFORM_GUIDES["linkedin"])
+
+    # Truncate each context source to avoid token overflow
+    article_context = article_context[:_MAX_CONTEXT_CHARS] if article_context else ""
+    brand_context   = brand_context[:_MAX_CONTEXT_CHARS]   if brand_context   else ""
+    kb_context      = kb_context[:_MAX_CONTEXT_CHARS]      if kb_context      else ""
 
     context_section = ""
 

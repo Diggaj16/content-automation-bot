@@ -73,7 +73,7 @@ def approve_idea(
     settings: Settings = Depends(get_settings),
 ) -> dict:
     """Approve or reject an idea. Optionally supply an edited_angle."""
-    update: dict = {"approval_status": payload.approval_status.value}
+    update: dict = {"approval_status": payload.approval_status}
     if payload.edited_angle is not None:
         update["edited_angle"] = payload.edited_angle
 

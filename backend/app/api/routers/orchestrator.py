@@ -13,7 +13,7 @@ import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from langchain_core.messages import AIMessage, ToolMessage
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.api.deps import get_supabase, get_settings
 from app.config import Settings
@@ -29,8 +29,8 @@ _agent_build_lock = asyncio.Lock()
 
 
 class OrchestratorRequest(BaseModel):
-    message: str
-    thread_id: str
+    message:   str = Field(..., min_length=1, max_length=32000)
+    thread_id: str = Field(..., min_length=1, max_length=128)
 
 
 class OrchestratorResponse(BaseModel):

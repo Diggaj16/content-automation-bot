@@ -47,7 +47,7 @@ def approve_draft(
     supabase: Client = Depends(get_supabase),
 ) -> dict:
     """Approve or reject a draft. Optionally supply edited content_text and/or scheduled_at."""
-    update: dict = {"approval_status": payload.approval_status.value}
+    update: dict = {"approval_status": payload.approval_status}
     if payload.content_text is not None:
         update["content_text"] = payload.content_text
     if payload.scheduled_at is not None:

@@ -27,7 +27,11 @@ def write_draft(supabase, draft_create: DraftCreate) -> Optional[str]:
                 if draft_create.suggested_publish_time else None
             ),
         }
-        resp = supabase.table("drafts").insert(payload).execute()
+        resp = (
+            supabase.table("drafts")
+            .upsert(payload, on_conflict="source_idea_id,platform")
+            .execute()
+        )
         if not resp.data:
             logger.warning("write_draft: insert returned no data")
             return None

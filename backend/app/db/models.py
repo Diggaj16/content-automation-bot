@@ -9,10 +9,10 @@ Convention:
 from __future__ import annotations
 
 from datetime import datetime, date
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 from enum import Enum
 
 
@@ -163,7 +163,7 @@ class IdeaCreate(BaseModel):
 
 class IdeaApproval(BaseModel):
     """Payload from the human at Gate 1."""
-    approval_status: ApprovalStatus
+    approval_status: Literal["approved", "rejected"]
     edited_angle:    Optional[str] = None
 
 
@@ -215,7 +215,7 @@ class DraftCreate(BaseModel):
 
 class DraftApproval(BaseModel):
     """Payload from the human at Gate 2."""
-    approval_status: DraftStatus
+    approval_status: Literal["approved", "rejected"]
     content_text:    Optional[str]      = None
     scheduled_at:    Optional[datetime] = None
 
@@ -290,7 +290,7 @@ class EmailSubscriber(BaseModel):
 
 
 class EmailSubscriberCreate(BaseModel):
-    email:  str
+    email:  EmailStr
     name:   Optional[str]    = None
     source: SubscriberSource = SubscriberSource.MANUAL
 

@@ -19,30 +19,30 @@ def _make_draft_create(platform: str = "linkedin") -> DraftCreate:
 
 def test_write_draft_returns_id_on_success():
     sb = MagicMock()
-    sb.table.return_value.insert.return_value.execute.return_value.data = [{"id": "draft-uuid-001"}]
+    sb.table.return_value.upsert.return_value.execute.return_value.data = [{"id": "draft-uuid-001"}]
     result = write_draft(sb, _make_draft_create())
     assert result == "draft-uuid-001"
 
 
 def test_write_draft_returns_none_on_empty_data():
     sb = MagicMock()
-    sb.table.return_value.insert.return_value.execute.return_value.data = []
+    sb.table.return_value.upsert.return_value.execute.return_value.data = []
     result = write_draft(sb, _make_draft_create())
     assert result is None
 
 
 def test_write_draft_returns_none_on_exception():
     sb = MagicMock()
-    sb.table.return_value.insert.return_value.execute.side_effect = RuntimeError("DB error")
+    sb.table.return_value.upsert.return_value.execute.side_effect = RuntimeError("DB error")
     result = write_draft(sb, _make_draft_create("twitter"))
     assert result is None
 
 
 def test_write_draft_serialises_platform_as_string():
     sb = MagicMock()
-    sb.table.return_value.insert.return_value.execute.return_value.data = [{"id": "x"}]
+    sb.table.return_value.upsert.return_value.execute.return_value.data = [{"id": "x"}]
     write_draft(sb, _make_draft_create("twitter"))
-    payload = sb.table.return_value.insert.call_args[0][0]
+    payload = sb.table.return_value.upsert.call_args[0][0]
     assert payload["platform"] == "twitter"
     assert isinstance(payload["platform"], str)
 
@@ -56,9 +56,9 @@ def test_write_draft_serialises_finance_flags_as_list():
         finance_flags=[FinanceFlag(flag_type="investment_advice", content="buy now", context="you should buy now")],
     )
     sb = MagicMock()
-    sb.table.return_value.insert.return_value.execute.return_value.data = [{"id": "y"}]
+    sb.table.return_value.upsert.return_value.execute.return_value.data = [{"id": "y"}]
     write_draft(sb, draft)
-    payload = sb.table.return_value.insert.call_args[0][0]
+    payload = sb.table.return_value.upsert.call_args[0][0]
     assert isinstance(payload["finance_flags"], list)
     assert payload["finance_flags"][0]["flag_type"] == "investment_advice"
 
@@ -71,7 +71,7 @@ def test_write_draft_none_idea_id_serialised_as_none():
         source_idea_id=None,
     )
     sb = MagicMock()
-    sb.table.return_value.insert.return_value.execute.return_value.data = [{"id": "z"}]
+    sb.table.return_value.upsert.return_value.execute.return_value.data = [{"id": "z"}]
     write_draft(sb, draft)
-    payload = sb.table.return_value.insert.call_args[0][0]
+    payload = sb.table.return_value.upsert.call_args[0][0]
     assert payload["source_idea_id"] is None
