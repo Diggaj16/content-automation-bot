@@ -12,6 +12,7 @@ import {
 } from "../lib/jobStore";
 
 const POLL_MS            = 2000;
+const IDLE_POLL_MS       = 10_000;       // poll slowly when no active jobs
 const SHOW_AFTER_DONE_MS = 60_000;       // keep completed jobs visible for 60s
 const JOB_TIMEOUT_MS     = 30 * 60_000; // mark stuck queued/in_progress as failed after 30 min
 
@@ -37,7 +38,7 @@ function summarise(result: Record<string, unknown> | null | undefined): string {
 
 export default function GlobalJobMonitor() {
   const [jobs, setJobs] = useState<JobRecord[]>([]);
-  const intervalRef  = useRef<ReturnType<typeof setInterval> | null>(null);
+  const timeoutRef   = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tickingRef   = useRef(false); // guard against concurrent tick() calls
   const mountedRef   = useRef(true);
 
@@ -90,6 +91,13 @@ export default function GlobalJobMonitor() {
       if (mountedRef.current) {
         setJobs(getRecentJobs(SHOW_AFTER_DONE_MS));
       }
+
+      // Schedule next tick — fast when jobs are active, slow when idle
+      const hasActive = getActiveJobs().length > 0;
+      const nextDelay = hasActive ? POLL_MS : IDLE_POLL_MS;
+      if (mountedRef.current) {
+        timeoutRef.current = setTimeout(tick, nextDelay);
+      }
     } finally {
       tickingRef.current = false;
     }
@@ -97,11 +105,10 @@ export default function GlobalJobMonitor() {
 
   useEffect(() => {
     mountedRef.current = true;
-    void tick();
-    intervalRef.current = setInterval(tick, POLL_MS);
+    timeoutRef.current = setTimeout(tick, 0); // start immediately
     return () => {
       mountedRef.current = false;
-      if (intervalRef.current) clearInterval(intervalRef.current);
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
     };
   }, [tick]);
 
