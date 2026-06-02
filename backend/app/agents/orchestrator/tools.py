@@ -21,7 +21,7 @@ logger = get_logger(__name__)
 def _duckduckgo_search(query: str, max_results: int = 3) -> list[dict]:
     """Search using DuckDuckGo. Returns list of {url, title, snippet}."""
     try:
-        from duckduckgo_search import DDGS
+        from duckduckgo_search import DDGS  # type: ignore[import-untyped]
         results = []
         with DDGS() as ddgs:
             for r in ddgs.text(query, max_results=max_results):
@@ -39,7 +39,7 @@ def _duckduckgo_search(query: str, max_results: int = 3) -> list[dict]:
 def _tavily_search(query: str, api_key: str, max_results: int = 3) -> list[dict]:
     """Search using Tavily API. Returns list of {url, title, snippet}."""
     try:
-        from tavily import TavilyClient
+        from tavily import TavilyClient  # type: ignore[import-untyped]
         client = TavilyClient(api_key=api_key)
         resp = client.search(query=query, max_results=max_results, search_depth="advanced")
         return [
