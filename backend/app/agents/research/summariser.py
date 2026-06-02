@@ -12,7 +12,7 @@ import json
 import re
 from dataclasses import dataclass
 
-from anthropic import Anthropic
+from anthropic import Anthropic, AsyncAnthropic
 
 from app.db.models import StructuredSummary
 from app.utils.logging import get_logger
@@ -109,6 +109,49 @@ def summarise_article(
     except Exception as exc:
         logger.warning(
             "summarise_article failed — using fallback",
+            extra={"title": title, "error": str(exc)},
+        )
+        return _fallback_summary(title)
+
+
+async def async_summarise_article(
+    full_text: str,
+    title: str,
+    client: AsyncAnthropic,
+    model: str,
+) -> SummaryResult:
+    """
+    Async version of summarise_article using AsyncAnthropic.
+    Identical logic — does not block the event loop.
+    """
+    truncated = full_text[:_MAX_ARTICLE_CHARS]
+    user_content = f"Title: {title}\n\n{truncated}"
+
+    try:
+        message = await client.messages.create(
+            model=model,
+            max_tokens=_MAX_OUTPUT_TOKENS,
+            system=_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_content}],
+        )
+        if not message.content:
+            logger.warning("async_summarise_article: empty content list in API response", extra={"title": title})
+            return _fallback_summary(title)
+        raw = message.content[0].text.strip()
+        json_match = re.search(r'\{.*\}', raw, re.DOTALL)
+        if json_match:
+            raw = json_match.group(0)
+        data = json.loads(raw)
+        filtered = {k: v for k, v in data.items() if k in _KNOWN_FIELDS}
+        summary = StructuredSummary(**filtered)
+        return SummaryResult(
+            summary=summary,
+            input_tokens=message.usage.input_tokens,
+            output_tokens=message.usage.output_tokens,
+        )
+    except Exception as exc:
+        logger.warning(
+            "async_summarise_article failed — using fallback",
             extra={"title": title, "error": str(exc)},
         )
         return _fallback_summary(title)

@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
-from anthropic import Anthropic
+from anthropic import Anthropic, AsyncAnthropic
 
 from app.utils.logging import get_logger
 
@@ -92,6 +92,50 @@ def pre_score_headlines(
     except Exception as exc:
         logger.warning(
             "pre_score_headlines failed — defaulting all to 5.0",
+            extra={"error": str(exc), "title_count": len(titles), "model": model},
+        )
+        return PreScoreResult(scores=[5.0] * len(titles))
+
+
+async def async_pre_score_headlines(
+    titles: list[str],
+    client: AsyncAnthropic,
+    model: str,
+) -> PreScoreResult:
+    """
+    Async version of pre_score_headlines using AsyncAnthropic.
+    Identical logic — does not block the event loop.
+    """
+    if not titles:
+        return PreScoreResult()
+
+    headlines_text = "\n".join(f"{i + 1}. {title}" for i, title in enumerate(titles))
+
+    try:
+        message = await client.messages.create(
+            model=model,
+            max_tokens=512,
+            system=_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": headlines_text}],
+        )
+        raw = message.content[0].text.strip()
+        scores_raw = json.loads(raw)
+
+        if not isinstance(scores_raw, list) or len(scores_raw) != len(titles):
+            raise ValueError(
+                f"Expected JSON list of {len(titles)} scores, got: {raw!r}"
+            )
+
+        scores = [float(s) for s in scores_raw]
+        return PreScoreResult(
+            scores=scores,
+            input_tokens=message.usage.input_tokens,
+            output_tokens=message.usage.output_tokens,
+        )
+
+    except Exception as exc:
+        logger.warning(
+            "async_pre_score_headlines failed — defaulting all to 5.0",
             extra={"error": str(exc), "title_count": len(titles), "model": model},
         )
         return PreScoreResult(scores=[5.0] * len(titles))
