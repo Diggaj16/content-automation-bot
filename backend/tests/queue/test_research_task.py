@@ -14,6 +14,8 @@ def _make_ctx() -> dict:
     settings.daily_cost_alert_usd = 5.0
     settings.slack_webhook_url = None
     settings.site_failure_pause_threshold = 5
+    settings.articles_per_site = 10
+    settings.browser_sessions_dir = "~/.config/contentautomation/browser_sessions"
 
     supabase = MagicMock()
     # No active sites — simplest successful run
@@ -26,7 +28,7 @@ def _make_ctx() -> dict:
 async def test_research_task_returns_done_status_with_no_sites():
     """With zero active sites the task completes and returns status=done."""
     ctx = _make_ctx()
-    with patch("app.queue.tasks.Anthropic"):
+    with patch("app.queue.tasks.AsyncAnthropic"):
         from app.queue.tasks import research_agent_task
         result = await research_agent_task(ctx)
 
@@ -41,7 +43,7 @@ async def test_research_task_returns_done_status_with_no_sites():
 async def test_research_task_writes_run_log():
     """A run_logs INSERT must be called at the end of every run."""
     ctx = _make_ctx()
-    with patch("app.queue.tasks.Anthropic"):
+    with patch("app.queue.tasks.AsyncAnthropic"):
         from app.queue.tasks import research_agent_task
         await research_agent_task(ctx)
 
@@ -54,7 +56,7 @@ async def test_research_task_writes_run_log():
 async def test_research_task_cron_trigger_with_no_args():
     """No topic/url args — task must complete successfully."""
     ctx = _make_ctx()
-    with patch("app.queue.tasks.Anthropic"):
+    with patch("app.queue.tasks.AsyncAnthropic"):
         from app.queue.tasks import research_agent_task
         result = await research_agent_task(ctx)
 
@@ -86,8 +88,8 @@ async def test_research_task_processes_one_site_one_article():
     # upsert_raw_content returns a UUID
     ctx["supabase"].table.return_value.insert.return_value.execute.return_value.data = [{"id": "article-uuid"}]
     ctx["supabase"].table.return_value.update.return_value.eq.return_value.execute.return_value.data = []
-    # is_url_seen returns False (not seen)
-    ctx["supabase"].table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
+    # Batch dedup IN() query returns no seen URLs
+    ctx["supabase"].table.return_value.select.return_value.in_.return_value.execute.return_value.data = []
 
     mock_link = MagicMock()
     mock_link.url = "https://www.livemint.com/market/rbi-rate"
@@ -114,11 +116,11 @@ async def test_research_task_processes_one_site_one_article():
     mock_pre_result.output_tokens = 10
 
     with (
-        patch("app.queue.tasks.Anthropic"),
+        patch("app.queue.tasks.AsyncAnthropic"),
         patch("app.agents.research.scraper.scrape_homepage", new=AsyncMock(return_value=[mock_link])),
         patch("app.agents.research.extractor.fetch_article", new=AsyncMock(return_value=mock_content)),
-        patch("app.agents.research.prescorer.pre_score_headlines", return_value=mock_pre_result),
-        patch("app.agents.research.summariser.summarise_article", return_value=mock_summary_result),
+        patch("app.agents.research.prescorer.async_pre_score_headlines", new=AsyncMock(return_value=mock_pre_result)),
+        patch("app.agents.research.summariser.async_summarise_article", new=AsyncMock(return_value=mock_summary_result)),
         patch("app.agents.research.filters.is_url_seen", return_value=False),
         patch("app.agents.research.filters.is_article_fresh", return_value=True),
         patch("app.agents.research.filters.is_article_long_enough", return_value=True),
@@ -144,7 +146,7 @@ async def test_research_task_chains_to_scoring_when_redis_available():
     # Empty sites list so the task runs quickly
     ctx["supabase"].table.return_value.select.return_value.eq.return_value.execute.return_value.data = []
 
-    with patch("app.queue.tasks.Anthropic"):
+    with patch("app.queue.tasks.AsyncAnthropic"):
         from app.queue.tasks import research_agent_task
         result = await research_agent_task(ctx)
 

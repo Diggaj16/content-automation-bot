@@ -31,7 +31,7 @@ def _make_ctx(articles_per_site=2):
 async def test_research_task_runs_with_articles_per_site_setting():
     """research_agent_task reads articles_per_site from settings without error."""
     ctx = _make_ctx(articles_per_site=3)
-    with patch("app.queue.tasks.Anthropic"), \
+    with patch("app.queue.tasks.AsyncAnthropic"), \
          patch("app.agents.embedding.client.make_embed_client"):
         from app.queue.tasks import research_agent_task
         result = await research_agent_task(ctx)

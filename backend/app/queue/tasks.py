@@ -29,8 +29,8 @@ async def research_agent_task(
     from app.agents.research.scraper import scrape_homepage
     from app.agents.research.extractor import fetch_article, normalize_url
     from app.agents.research.filters import is_url_seen, is_article_fresh, is_article_long_enough
-    from app.agents.research.prescorer import pre_score_headlines
-    from app.agents.research.summariser import summarise_article
+    from app.agents.research.prescorer import async_pre_score_headlines
+    from app.agents.research.summariser import async_summarise_article
     from app.agents.research.db_writer import (
         upsert_raw_content, record_site_success, record_site_failure, upsert_cost_log,
     )
@@ -42,7 +42,7 @@ async def research_agent_task(
     supabase = ctx["supabase"]
     start_time = time.time()
 
-    anthropic_client = Anthropic(api_key=settings.anthropic_api_key)
+    anthropic_client = AsyncAnthropic(api_key=settings.anthropic_api_key)
 
     processed_count = 0
     success_count = 0
@@ -54,6 +54,8 @@ async def research_agent_task(
     # Separate token tracking per model for accurate cost calculation
     haiku_in = haiku_out = 0
     sonnet_in = sonnet_out = 0
+
+    _lock = asyncio.Lock()
 
     # Fetch all active sites
     try:
@@ -72,41 +74,51 @@ async def research_agent_task(
         }
     logger.info(f"research_agent_task: {len(sites)} active sites to process")
 
-    for site in sites:
+    async def _process_site(site) -> None:
+        nonlocal processed_count, success_count, failure_count, skipped_count
+        nonlocal haiku_in, haiku_out, sonnet_in, sonnet_out
         try:
             # Step 1 — Scrape section page
             links = await scrape_homepage(site.section_url, site.site_name)
             if not links:
-                record_site_failure(supabase, site.id, "No links extracted", settings.site_failure_pause_threshold)
-                failure_count += 1
-                continue
+                await asyncio.to_thread(
+                    record_site_failure, supabase, site.id,
+                    "No links extracted", settings.site_failure_pause_threshold
+                )
+                async with _lock:
+                    failure_count += 1
+                return
 
-            # Step 2 — Batch pre-score all headlines (one Haiku call per site)
+            # Step 2 — Batch pre-score (async, non-blocking)
             titles = [lnk.title for lnk in links]
-            pre_result = pre_score_headlines(titles, anthropic_client, settings.claude_model_light)
-            haiku_in += pre_result.input_tokens
-            haiku_out += pre_result.output_tokens
+            pre_result = await async_pre_score_headlines(
+                titles, anthropic_client, settings.claude_model_light
+            )
+            async with _lock:
+                haiku_in += pre_result.input_tokens
+                haiku_out += pre_result.output_tokens
 
             if len(pre_result.scores) != len(links):
                 logger.warning(
                     f"pre_score count mismatch: {len(links)} links vs {len(pre_result.scores)} scores"
                 )
 
-            # Step 3 — Filter: pre-score threshold + batch dedup (1 DB call instead of N)
+            # Step 3 — Filter by pre-score threshold
             score_filtered = [
                 (link, score)
                 for link, score in zip(links, pre_result.scores)
                 if score >= site.pre_score_threshold
             ]
             low_score_count = len(links) - len(score_filtered)
-            skipped_count += low_score_count
+            async with _lock:
+                skipped_count += low_score_count
 
             if score_filtered:
-                # Batch dedup: one Supabase IN() query instead of N individual SELECTs
+                # Batch dedup (wrap sync Supabase call in thread)
                 norm_map = {normalize_url(l.url): (l, s) for l, s in score_filtered}
                 try:
-                    seen_resp = (
-                        supabase.table("raw_content")
+                    seen_resp = await asyncio.to_thread(
+                        lambda: supabase.table("raw_content")
                         .select("normalized_url")
                         .in_("normalized_url", list(norm_map.keys()))
                         .execute()
@@ -122,22 +134,24 @@ async def research_agent_task(
                     for norm, (l, s) in norm_map.items()
                     if norm not in seen_set
                 ]
-                skipped_count += len(norm_map) - len(to_fetch)
+                async with _lock:
+                    skipped_count += len(norm_map) - len(to_fetch)
 
                 # cap per-site to avoid timeout
                 cap = settings.articles_per_site
                 if len(to_fetch) > cap:
-                    pre_cap_count = len(to_fetch)  # capture BEFORE reassignment
+                    pre_cap_count = len(to_fetch)
                     to_fetch = sorted(to_fetch, key=lambda x: x[1], reverse=True)[:cap]
-                    skipped_count += pre_cap_count - cap
+                    async with _lock:
+                        skipped_count += pre_cap_count - cap
             else:
                 to_fetch = []
 
-            # Step 3b — Fetch articles in parallel (up to _ARTICLE_CONCURRENCY at once)
-            sem = asyncio.Semaphore(_ARTICLE_CONCURRENCY)
+            # Step 3b — Fetch articles in parallel
+            _site_sem = asyncio.Semaphore(_ARTICLE_CONCURRENCY)
 
             async def _fetch(link_url: str):
-                async with sem:
+                async with _site_sem:
                     return await fetch_article(link_url, sessions_dir=settings.browser_sessions_dir)
 
             fetch_results = await asyncio.gather(
@@ -146,13 +160,15 @@ async def research_agent_task(
             )
 
             for (link, score, _norm), content_or_exc in zip(to_fetch, fetch_results):
-                processed_count += 1
+                async with _lock:
+                    processed_count += 1
                 try:
                     if isinstance(content_or_exc, Exception):
                         logger.warning("research_agent_task: article fetch error",
                                        extra={"url": link.url, "error": str(content_or_exc)})
-                        failure_count += 1
-                        errors.append({"url": link.url, "error": str(content_or_exc)})
+                        async with _lock:
+                            failure_count += 1
+                            errors.append({"url": link.url, "error": str(content_or_exc)})
                         continue
 
                     content = content_or_exc
@@ -162,7 +178,6 @@ async def research_agent_task(
                             logger, "skip_paywall", "Paywall or thin content",
                             {"url": link.url, "word_count": content.word_count},
                         ))
-                        # Alert only when no saved login session exists for this domain
                         from pathlib import Path
                         from urllib.parse import urlparse as _urlparse
                         _domain = _urlparse(link.url).netloc.lstrip("www.")
@@ -176,53 +191,67 @@ async def research_agent_task(
                                 f"Tell the orchestrator: *login to {link.url}*\n"
                                 f"A browser will open — log in once and all future scrapes will use your saved session.",
                             )
-                        skipped_count += 1   # paywall = access issue, not a site failure
+                        async with _lock:
+                            skipped_count += 1
                         continue
 
                     if not is_article_fresh(content.publication_date, settings.article_max_age_days):
-                        skipped_count += 1
+                        async with _lock:
+                            skipped_count += 1
                         continue
 
                     if not is_article_long_enough(content.word_count, settings.article_min_words):
-                        skipped_count += 1
+                        async with _lock:
+                            skipped_count += 1
                         continue
 
-                    # Step 4 — Structured summarisation (Sonnet)
-                    sum_result = summarise_article(
+                    # Step 4 — Async summarisation (non-blocking)
+                    sum_result = await async_summarise_article(
                         content.full_text, content.title, anthropic_client, settings.claude_model_heavy,
                     )
-                    sonnet_in += sum_result.input_tokens
-                    sonnet_out += sum_result.output_tokens
+                    async with _lock:
+                        sonnet_in += sum_result.input_tokens
+                        sonnet_out += sum_result.output_tokens
 
-                    # Step 5 — Write to DB
-                    article_id = upsert_raw_content(
-                        supabase, content, sum_result.summary, score, source_name=site.site_name,
+                    # Step 5 — Write to DB (wrap sync call in thread)
+                    article_id = await asyncio.to_thread(
+                        upsert_raw_content, supabase, content, sum_result.summary, score,
+                        source_name=site.site_name,
                     )
                     if article_id:
-                        success_count += 1
+                        async with _lock:
+                            success_count += 1
                         trace_entries.append(log_agent_decision(
                             logger, "store_article", "Stored successfully",
                             {"id": article_id, "url": link.url, "score": score},
                         ))
                     else:
-                        failure_count += 1
+                        async with _lock:
+                            failure_count += 1
                         trace_entries.append(log_agent_decision(
                             logger, "store_failed", "upsert_raw_content returned None",
                             {"url": link.url, "score": score},
                         ))
+
                 except Exception as article_exc:
                     logger.warning(
                         f"research_agent_task: article error | url={link.url} | err={article_exc}"
                     )
-                    failure_count += 1
+                    async with _lock:
+                        failure_count += 1
 
-            record_site_success(supabase, site.id)
+            await asyncio.to_thread(record_site_success, supabase, site.id)
 
         except Exception as exc:
             logger.error(f"research_agent_task: site error | site={site.site_name} | err={exc}")
-            errors.append({"site": site.site_name, "error": str(exc)})
-            record_site_failure(supabase, site.id, str(exc), settings.site_failure_pause_threshold)
-            failure_count += 1
+            async with _lock:
+                errors.append({"site": site.site_name, "error": str(exc)})
+                failure_count += 1
+            await asyncio.to_thread(
+                record_site_failure, supabase, site.id, str(exc), settings.site_failure_pause_threshold
+            )
+
+    await asyncio.gather(*[_process_site(site) for site in sites])
 
     duration = time.time() - start_time
 
@@ -238,7 +267,7 @@ async def research_agent_task(
     }
 
     # Accumulate daily cost
-    upsert_cost_log(supabase, "research_agent", total_usd=total_usd, token_count=total_tokens)
+    await asyncio.to_thread(upsert_cost_log, supabase, "research_agent", total_usd=total_usd, token_count=total_tokens)
 
     # Write run_log
     trigger = TriggerType.CRON if (topic is None and url is None) else TriggerType.MANUAL
@@ -254,7 +283,7 @@ async def research_agent_task(
         token_cost=token_cost_dict,
     )
     try:
-        supabase.table("run_logs").insert(run_log.model_dump()).execute()
+        await asyncio.to_thread(lambda: supabase.table("run_logs").insert(run_log.model_dump()).execute())
     except Exception as exc:
         logger.error(f"research_agent_task: failed to write run_log | err={exc}")
 
