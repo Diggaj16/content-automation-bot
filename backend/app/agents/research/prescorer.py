@@ -91,10 +91,10 @@ def pre_score_headlines(
 
     except Exception as exc:
         logger.warning(
-            "pre_score_headlines failed — defaulting all to 5.0",
+            "pre_score_headlines failed — defaulting all to 0.0 (site will be skipped)",
             extra={"error": str(exc), "title_count": len(titles), "model": model},
         )
-        return PreScoreResult(scores=[5.0] * len(titles))
+        return PreScoreResult(scores=[0.0] * len(titles))
 
 
 async def async_pre_score_headlines(
@@ -135,7 +135,7 @@ async def async_pre_score_headlines(
 
     except Exception as exc:
         logger.warning(
-            "async_pre_score_headlines failed — defaulting all to 5.0",
+            "async_pre_score_headlines failed — defaulting all to 0.0 (site will be skipped)",
             extra={"error": str(exc), "title_count": len(titles), "model": model},
         )
-        return PreScoreResult(scores=[5.0] * len(titles))
+        return PreScoreResult(scores=[0.0] * len(titles))

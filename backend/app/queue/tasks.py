@@ -82,6 +82,8 @@ async def research_agent_task(
     _global_fetch_sem = asyncio.Semaphore(5)
     # Serialise Supabase batch-dedup calls so 7 parallel sites don't exhaust the connection pool.
     _dedup_sem = asyncio.Semaphore(2)
+    # Serialise Anthropic pre-score calls — 7 simultaneous calls hit rate limits.
+    _prescore_sem = asyncio.Semaphore(2)
 
     processed_count = 0
     success_count = 0
@@ -128,11 +130,12 @@ async def research_agent_task(
                     failure_count += 1
                 return
 
-            # Step 2 — Batch pre-score (async, non-blocking)
+            # Step 2 — Batch pre-score (serialised to avoid Anthropic rate limits)
             titles = [lnk.title for lnk in links]
-            pre_result = await async_pre_score_headlines(
-                titles, anthropic_client, settings.claude_model_light
-            )
+            async with _prescore_sem:
+                pre_result = await async_pre_score_headlines(
+                    titles, anthropic_client, settings.claude_model_light
+                )
             async with _lock:
                 haiku_in += pre_result.input_tokens
                 haiku_out += pre_result.output_tokens
