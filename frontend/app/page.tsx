@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
+import useSWR from "swr";
 import {
   getStatus,
   triggerResearch,
@@ -12,37 +13,30 @@ import { useJobStatus } from "./hooks/useJobStatus";
 import JobStatusBadge from "./components/JobStatusBadge";
 
 export default function DashboardPage() {
-  const [status, setStatus] = useState<{
-    recent_runs: RunLog[];
-    cost_log: CostLog[];
-  } | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [triggerError, setTriggerError] = useState<string | null>(null);
 
   const research = useJobStatus();
   const scoring = useJobStatus();
 
-  const fetchStatus = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      setStatus(await getStatus());
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Failed to load");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const {
+    data: status,
+    isLoading: loading,
+    error: swrError,
+    mutate: refreshStatus,
+  } = useSWR(
+    "/api/proxy/status?limit=10",
+    () => getStatus(),
+    { revalidateOnFocus: false, dedupingInterval: 5000 }
+  );
 
-  useEffect(() => { fetchStatus(); }, [fetchStatus]);
+  const error = swrError instanceof Error ? swrError.message : swrError ? "Failed to load" : null;
 
   // Auto-refresh run logs when a job completes
   useEffect(() => {
     if (research.state.phase === "complete" || scoring.state.phase === "complete") {
-      fetchStatus();
+      refreshStatus();
     }
-  }, [research.state.phase, scoring.state.phase, fetchStatus]);
+  }, [research.state.phase, scoring.state.phase, refreshStatus]);
 
   const handleTriggerResearch = async () => {
     research.reset();
@@ -75,7 +69,7 @@ export default function DashboardPage() {
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold text-gray-900">Dashboard</h1>
         <button
-          onClick={fetchStatus}
+          onClick={() => refreshStatus()}
           disabled={loading}
           className="px-3 py-1.5 text-sm border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 disabled:opacity-50"
         >

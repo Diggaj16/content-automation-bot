@@ -257,9 +257,6 @@ const TAB_LABELS: Record<StatusTab, string> = {
 
 export default function IdeasPage() {
   const [tab, setTab] = useState<StatusTab>("pending_approval");
-  const [ideas, setIdeas] = useState<Idea[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -275,6 +272,20 @@ export default function IdeasPage() {
 
   const creationJob = useJobStatus();
 
+  // ── SWR fetch ──────────────────────────────────────────────────────────────
+  const {
+    data: ideas = [],
+    isLoading: loading,
+    error: swrError,
+    mutate: refreshIdeas,
+  } = useSWR(
+    `/api/proxy/ideas?status=${tab}`,
+    () => getIdeas(tab),
+    { revalidateOnFocus: false, dedupingInterval: 3000 }
+  );
+
+  const error = swrError instanceof Error ? swrError.message : swrError ? "Failed to load ideas" : null;
+
   // ── toast ──────────────────────────────────────────────────────────────────
   const showToast = useCallback((msg: string) => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -286,22 +297,6 @@ export default function IdeasPage() {
     return () => { if (toastTimerRef.current) clearTimeout(toastTimerRef.current); };
   }, []);
 
-  // ── fetch ──────────────────────────────────────────────────────────────────
-  const fetchIdeas = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    setPlatformFilter("");
-    try {
-      setIdeas(await getIdeas(tab));
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Failed to load ideas");
-    } finally {
-      setLoading(false);
-    }
-  }, [tab]);
-
-  useEffect(() => { fetchIdeas(); }, [fetchIdeas]);
-
   // ── derived state ──────────────────────────────────────────────────────────
   const platforms = useMemo(
     () => Array.from(new Set(ideas.map((i) => i.platform))).sort(),
@@ -309,7 +304,7 @@ export default function IdeasPage() {
   );
 
   const displayedIdeas = useMemo(() => {
-    let list = platformFilter ? ideas.filter((i) => i.platform === platformFilter) : ideas;
+    const list = platformFilter ? ideas.filter((i) => i.platform === platformFilter) : ideas;
     const sorted = [...list];
     switch (sortBy) {
       case "score_desc":  sorted.sort((a, b) => (b.score ?? 0) - (a.score ?? 0)); break;
@@ -323,9 +318,12 @@ export default function IdeasPage() {
 
   // ── handlers ───────────────────────────────────────────────────────────────
   const handleAction = useCallback((id: string) => {
-    setIdeas((prev) => prev.filter((i) => i.id !== id));
+    // Optimistic update: remove acted-on idea from SWR cache immediately
+    refreshIdeas((prev = []) => prev.filter((i) => i.id !== id), false);
     showToast("Action recorded.");
-  }, [showToast]);
+    // Background revalidate to sync with server
+    refreshIdeas();
+  }, [showToast, refreshIdeas]);
 
   const handleApproved = useCallback((id: string) => {
     setApprovedIds((prev) => [...prev, id]);
@@ -342,7 +340,8 @@ export default function IdeasPage() {
     for (const id of ids) {
       try {
         await approveIdea(id, { approval_status: "rejected" });
-        setIdeas((prev) => prev.filter((i) => i.id !== id));
+        // Optimistic update per-item as we go
+        refreshIdeas((prev = []) => prev.filter((i) => i.id !== id), false);
         count++;
       } catch {
         // continue with others
@@ -350,6 +349,8 @@ export default function IdeasPage() {
     }
     showToast(`Rejected ${count} idea${count !== 1 ? "s" : ""}.`);
     setRejectingAll(false);
+    // Final sync with server
+    refreshIdeas();
   };
 
   const handleSendToCreation = async () => {
@@ -393,7 +394,7 @@ export default function IdeasPage() {
           </p>
         </div>
         <button
-          onClick={fetchIdeas}
+          onClick={() => refreshIdeas()}
           disabled={loading}
           className="px-3 py-1.5 text-sm border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 disabled:opacity-50"
         >
@@ -406,7 +407,11 @@ export default function IdeasPage() {
         {(["pending_approval", "approved", "rejected"] as StatusTab[]).map((t) => (
           <button
             key={t}
-            onClick={() => { setTab(t); setSortBy(t === "pending_approval" ? "score_desc" : "date_desc"); }}
+            onClick={() => {
+              setTab(t);
+              setSortBy(t === "pending_approval" ? "score_desc" : "date_desc");
+              setPlatformFilter("");
+            }}
             className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
               tab === t
                 ? "border-blue-600 text-blue-700"
