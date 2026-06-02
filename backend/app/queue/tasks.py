@@ -12,18 +12,30 @@ logger = get_logger(__name__)
 # Max simultaneous article fetches PER SITE
 _ARTICLE_CONCURRENCY = 3
 
-# Global cap across ALL sites running in parallel.
-# With 7 sites × 3 per-site = 21 possible concurrent browsers — too many.
-# This global semaphore caps total browser instances at once.
-_GLOBAL_FETCH_SEM = asyncio.Semaphore(5)
+# NOTE: _GLOBAL_FETCH_SEM is created inside research_agent_task (not here) because
+# asyncio.Semaphore created outside a running event loop is broken in Python 3.10+.
 
 # URL path patterns that are never news articles — skip without fetching
 _NON_ARTICLE_PATH_PREFIXES = (
+    # Livemint non-article paths
     "/market/market-stats/",
     "/market-stats/",
     "/tools-calculators/",
     "/loans/",
     "/topic/",
+    # Business Standard non-article paths
+    "/markets/nse-nifty-indices-",
+    "/markets/bse-sensex-indices-",
+    "/markets/nse-nifty-midcap",
+    "/markets/bse-",
+    "/markets/nse-",
+    "/finance/personal-finance/retirement-calculator",
+    "/finance/personal-finance/home-loan-calculator",
+    "/finance/personal-finance/education-loan-calculator",
+    "/finance/personal-finance/net-worth-calculator",
+    "/finance/personal-finance/crorepati-calculator",
+    "/finance/personal-finance/marriage-plan-calculator",
+    # Generic non-article paths
     "/webinars/",
     "/crossword",
     "/education/calculators",
@@ -64,6 +76,12 @@ async def research_agent_task(
     start_time = time.time()
 
     anthropic_client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+
+    # Created here (inside the running event loop) to avoid Python 3.10+ asyncio warnings.
+    # Caps total concurrent browser instances across all parallel sites.
+    _global_fetch_sem = asyncio.Semaphore(5)
+    # Serialise Supabase batch-dedup calls so 7 parallel sites don't exhaust the connection pool.
+    _dedup_sem = asyncio.Semaphore(2)
 
     processed_count = 0
     success_count = 0
@@ -140,16 +158,17 @@ async def research_agent_task(
                 skipped_count += low_score_count
 
             if score_filtered:
-                # Batch dedup (wrap sync Supabase call in thread)
+                # Batch dedup — serialised to 2 concurrent calls to avoid exhausting Supabase pool
                 norm_map = {normalize_url(l.url): (l, s) for l, s in score_filtered}
                 try:
-                    seen_resp = await asyncio.to_thread(
-                        lambda: supabase.table("raw_content")
-                        .select("normalized_url")
-                        .in_("normalized_url", list(norm_map.keys()))
-                        .execute()
-                    )
-                    seen_set = {r["normalized_url"] for r in (seen_resp.data or [])}
+                    async with _dedup_sem:
+                        seen_resp = await asyncio.to_thread(
+                            lambda: supabase.table("raw_content")
+                            .select("normalized_url")
+                            .in_("normalized_url", list(norm_map.keys()))
+                            .execute()
+                        )
+                        seen_set = {r["normalized_url"] for r in (seen_resp.data or [])}
                 except Exception as dedup_exc:
                     logger.warning("research: batch dedup failed, assuming all unseen",
                                    extra={"error": str(dedup_exc)})
@@ -178,7 +197,7 @@ async def research_agent_task(
             _site_sem = asyncio.Semaphore(_ARTICLE_CONCURRENCY)
 
             async def _fetch(link_url: str):
-                async with _GLOBAL_FETCH_SEM:   # global cap first
+                async with _global_fetch_sem:   # global cap first (created in running event loop)
                     async with _site_sem:        # then per-site cap
                         return await fetch_article(link_url, sessions_dir=settings.browser_sessions_dir)
 
