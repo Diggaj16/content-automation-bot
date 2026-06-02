@@ -104,9 +104,12 @@ def test_get_status_returns_empty_lists_on_none(client_with_pool, mock_sb):
 
 
 def test_get_status_db_error_returns_500(client_with_pool, mock_sb):
+    from unittest.mock import patch
     mock_sb.table.return_value.select.return_value.order.return_value \
         .limit.return_value.execute.side_effect = RuntimeError("db error")
-    resp = client_with_pool.get("/status")
+    # Patch the retry path so it also uses the failing mock (not a real Supabase client)
+    with patch("app.api.routers.triggers.get_supabase_client_fresh", return_value=mock_sb):
+        resp = client_with_pool.get("/status")
     assert resp.status_code == 500
 
 

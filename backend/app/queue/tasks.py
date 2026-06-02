@@ -9,8 +9,29 @@ from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-# Max simultaneous article fetches per site (browser tabs effectively)
+# Max simultaneous article fetches PER SITE
 _ARTICLE_CONCURRENCY = 3
+
+# Global cap across ALL sites running in parallel.
+# With 7 sites × 3 per-site = 21 possible concurrent browsers — too many.
+# This global semaphore caps total browser instances at once.
+_GLOBAL_FETCH_SEM = asyncio.Semaphore(5)
+
+# URL path patterns that are never news articles — skip without fetching
+_NON_ARTICLE_PATH_PREFIXES = (
+    "/market/market-stats/",
+    "/market-stats/",
+    "/tools-calculators/",
+    "/loans/",
+    "/topic/",
+    "/webinars/",
+    "/crossword",
+    "/education/calculators",
+    "/personal-finance/net-worth-calculator",
+    "/personal-finance/retirement-calculator",
+    "/personal-finance/home-loan-calculator",
+    "/personal-finance/education-loan-calculator",
+)
 
 
 async def research_agent_task(
@@ -103,11 +124,16 @@ async def research_agent_task(
                     f"pre_score count mismatch: {len(links)} links vs {len(pre_result.scores)} scores"
                 )
 
-            # Step 3 — Filter by pre-score threshold
+            # Step 3 — Filter: pre-score threshold + skip known non-article URL patterns
+            from urllib.parse import urlparse as _up
             score_filtered = [
                 (link, score)
                 for link, score in zip(links, pre_result.scores)
                 if score >= site.pre_score_threshold
+                and not any(
+                    _up(link.url).path.startswith(p)
+                    for p in _NON_ARTICLE_PATH_PREFIXES
+                )
             ]
             low_score_count = len(links) - len(score_filtered)
             async with _lock:
@@ -148,11 +174,13 @@ async def research_agent_task(
                 to_fetch = []
 
             # Step 3b — Fetch articles in parallel
+            # _GLOBAL_FETCH_SEM caps total browser instances across all parallel sites
             _site_sem = asyncio.Semaphore(_ARTICLE_CONCURRENCY)
 
             async def _fetch(link_url: str):
-                async with _site_sem:
-                    return await fetch_article(link_url, sessions_dir=settings.browser_sessions_dir)
+                async with _GLOBAL_FETCH_SEM:   # global cap first
+                    async with _site_sem:        # then per-site cap
+                        return await fetch_article(link_url, sessions_dir=settings.browser_sessions_dir)
 
             fetch_results = await asyncio.gather(
                 *[_fetch(link.url) for link, _, _ in to_fetch],

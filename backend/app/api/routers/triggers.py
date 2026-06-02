@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from supabase import Client
 
 from app.api.deps import get_arq_pool, get_supabase
+from app.db.client import get_supabase_client_fresh
 from app.db.models import ContentType
 from app.utils.logging import get_logger
 
@@ -100,6 +101,28 @@ async def get_job_status(job_id: str, request: Request) -> dict:
     return {"job_id": job_id, "status": status.value, "result": result}
 
 
+def _fetch_status(supabase: Client, limit: int) -> dict:
+    """Execute the two status queries. Extracted so the caller can retry with a fresh client."""
+    logs_resp = (
+        supabase.table("run_logs")
+        .select("*")
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    cost_resp = (
+        supabase.table("cost_log")
+        .select("*")
+        .order("date", desc=True)
+        .limit(30)
+        .execute()
+    )
+    return {
+        "recent_runs": logs_resp.data or [],
+        "cost_log": cost_resp.data or [],
+    }
+
+
 @router.get("/status")
 def get_status(
     limit: int = Query(default=10, ge=1, le=100),
@@ -107,24 +130,13 @@ def get_status(
 ) -> dict:
     """Return recent agent run logs and the daily cost summary."""
     try:
-        logs_resp = (
-            supabase.table("run_logs")
-            .select("*")
-            .order("created_at", desc=True)
-            .limit(limit)
-            .execute()
-        )
-        cost_resp = (
-            supabase.table("cost_log")
-            .select("*")
-            .order("date", desc=True)
-            .limit(30)
-            .execute()
-        )
-        return {
-            "recent_runs": logs_resp.data or [],
-            "cost_log": cost_resp.data or [],
-        }
+        return _fetch_status(supabase, limit)
     except Exception as exc:
-        logger.warning("triggers router error", extra={"error": str(exc)})
-        raise HTTPException(status_code=500, detail="Internal server error")
+        logger.warning("triggers: status query failed, retrying with fresh connection",
+                       extra={"error": str(exc)})
+        # Stale httpx connection pool — reset singleton and retry once
+        try:
+            return _fetch_status(get_supabase_client_fresh(), limit)
+        except Exception as exc2:
+            logger.warning("triggers router error", extra={"error": str(exc2)})
+            raise HTTPException(status_code=500, detail="Internal server error")

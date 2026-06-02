@@ -21,6 +21,12 @@ def get_supabase_client() -> Client:
 
 
 def reset_client() -> None:
-    """Force a new client on next call. Used in tests only."""
+    """Force a new client on next call. Clears stale connections and is used in tests."""
     global _client
     _client = None
+
+
+def get_supabase_client_fresh() -> Client:
+    """Force a fresh client (drops stale httpx connection pool). Use after connection errors."""
+    reset_client()
+    return get_supabase_client()
