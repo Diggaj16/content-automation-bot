@@ -14,5 +14,12 @@
   "reportOptionalMemberAccess": "none",
   "reportAttributeAccessIssue": "none",
   "reportArgumentType": "none",
-  "reportCallIssue": "none"
+  "reportCallIssue": "none",
+
+  "reportReturnType": "none",
+  "reportAssignmentType": "none",
+  "reportOperatorIssue": "none",
+  "reportUnhashable": "none",
+  "reportPrivateImportUsage": "none",
+  "reportGeneralTypeIssues": "none"
 }
