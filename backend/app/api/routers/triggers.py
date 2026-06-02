@@ -12,6 +12,9 @@ from supabase import Client
 
 from app.api.deps import get_arq_pool, get_supabase
 from app.db.models import ContentType
+from app.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 router = APIRouter(tags=["System"])
 
@@ -63,6 +66,8 @@ async def trigger_creation(
         )
     if not body.idea_ids:
         raise HTTPException(status_code=422, detail="idea_ids must not be empty")
+    if len(body.idea_ids) > 50:
+        raise HTTPException(status_code=422, detail="idea_ids must not exceed 50 items per request")
     job = await pool.enqueue_job(
         "creation_agent_task",
         idea_ids=body.idea_ids,
@@ -121,4 +126,5 @@ def get_status(
             "cost_log": cost_resp.data or [],
         }
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        logger.warning("triggers router error", extra={"error": str(exc)})
+        raise HTTPException(status_code=500, detail="Internal server error")

@@ -127,8 +127,9 @@ async def research_agent_task(
                 # cap per-site to avoid timeout
                 cap = settings.articles_per_site
                 if len(to_fetch) > cap:
+                    pre_cap_count = len(to_fetch)  # capture BEFORE reassignment
                     to_fetch = sorted(to_fetch, key=lambda x: x[1], reverse=True)[:cap]
-                    skipped_count += len(norm_map) - len(seen_set) - cap
+                    skipped_count += pre_cap_count - cap
             else:
                 to_fetch = []
 

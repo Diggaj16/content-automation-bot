@@ -14,6 +14,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from supabase import Client
 
 from app.api.deps import get_supabase
+from app.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/tables", tags=["DB Browser"])
 
@@ -137,7 +140,8 @@ def list_rows(
             "default_sort": default_sort,
         }
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        logger.warning("tables router error", extra={"error": str(exc)})
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/{table_name}/{row_id}")
@@ -168,7 +172,8 @@ def get_row(
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        logger.warning("tables router error", extra={"error": str(exc)})
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/{table_name}")
@@ -189,7 +194,8 @@ def insert_row(
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        logger.warning("tables router error", extra={"error": str(exc)})
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.patch("/{table_name}/{row_id}")
@@ -215,7 +221,8 @@ def update_row(
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        logger.warning("tables router error", extra={"error": str(exc)})
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.delete("/{table_name}/{row_id}")
@@ -234,4 +241,5 @@ def delete_row(
         )
         return {"deleted": True, "id": row_id}
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        logger.warning("tables router error", extra={"error": str(exc)})
+        raise HTTPException(status_code=500, detail="Internal server error")
