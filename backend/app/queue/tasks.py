@@ -170,10 +170,10 @@ async def research_agent_task(
                         ).exists()
                         if not _has_session:
                             send_slack_alert(
+                                settings.slack_webhook_url,
                                 f"🔐 *Paywall hit* on `{_domain}`\n"
                                 f"Tell the orchestrator: *login to {link.url}*\n"
                                 f"A browser will open — log in once and all future scrapes will use your saved session.",
-                                settings.slack_webhook_url,
                             )
                         skipped_count += 1   # paywall = access issue, not a site failure
                         continue

@@ -11,8 +11,9 @@ import {
   type JobRecord,
 } from "../lib/jobStore";
 
-const POLL_MS    = 2000;
-const SHOW_AFTER_DONE_MS = 60_000; // keep completed jobs visible for 60s
+const POLL_MS            = 2000;
+const SHOW_AFTER_DONE_MS = 60_000;       // keep completed jobs visible for 60s
+const JOB_TIMEOUT_MS     = 30 * 60_000; // mark stuck queued/in_progress as failed after 30 min
 
 function elapsed(job: JobRecord): number {
   const end = job.finished_at ?? Date.now();
@@ -36,48 +37,72 @@ function summarise(result: Record<string, unknown> | null | undefined): string {
 
 export default function GlobalJobMonitor() {
   const [jobs, setJobs] = useState<JobRecord[]>([]);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const intervalRef  = useRef<ReturnType<typeof setInterval> | null>(null);
+  const tickingRef   = useRef(false); // guard against concurrent tick() calls
+  const mountedRef   = useRef(true);
 
   // Reload from localStorage and poll active jobs
   const tick = useCallback(async () => {
-    const active  = getActiveJobs();
+    // Skip this tick if the previous one is still in flight
+    if (tickingRef.current) return;
+    tickingRef.current = true;
 
-    // Poll each active job
-    await Promise.all(
-      active.map(async job => {
-        try {
-          const res = await getJobStatus(job.job_id);
-          if (res.status === "complete") {
-            updateJob(job.job_id, {
-              status: "complete",
-              finished_at: Date.now(),
-              result: res.result ?? undefined,
-            });
-          } else if (res.status === "not_found") {
-            updateJob(job.job_id, { status: "failed", finished_at: Date.now() });
-          } else if (res.status === "in_progress") {
-            updateJob(job.job_id, { status: "in_progress" });
-          }
-        } catch {
-          // network blip — leave as-is
+    try {
+      const now    = Date.now();
+      const active = getActiveJobs();
+
+      // Expire stuck jobs that have been active longer than JOB_TIMEOUT_MS
+      for (const job of active) {
+        if (now - job.started_at > JOB_TIMEOUT_MS) {
+          updateJob(job.job_id, { status: "failed", finished_at: now });
         }
-      })
-    );
+      }
 
-    // Auto-remove completed jobs older than SHOW_AFTER_DONE_MS
-    getRecentJobs(SHOW_AFTER_DONE_MS)
-      .filter(j => (j.status === "complete" || j.status === "failed")
-               && j.finished_at
-               && Date.now() - j.finished_at > SHOW_AFTER_DONE_MS)
-      .forEach(j => removeJob(j.job_id));
+      // Poll jobs that are still active after the timeout check
+      await Promise.all(
+        getActiveJobs().map(async job => {
+          try {
+            const res = await getJobStatus(job.job_id);
+            if (res.status === "complete") {
+              updateJob(job.job_id, {
+                status: "complete",
+                finished_at: Date.now(),
+                result: res.result ?? undefined,
+              });
+            } else if (res.status === "not_found") {
+              updateJob(job.job_id, { status: "failed", finished_at: Date.now() });
+            } else if (res.status === "in_progress") {
+              updateJob(job.job_id, { status: "in_progress" });
+            }
+          } catch {
+            // network blip — leave as-is
+          }
+        })
+      );
 
-    setJobs(getRecentJobs(SHOW_AFTER_DONE_MS));
+      // Auto-remove completed/failed jobs older than SHOW_AFTER_DONE_MS
+      getRecentJobs(SHOW_AFTER_DONE_MS)
+        .filter(j => (j.status === "complete" || j.status === "failed")
+                 && j.finished_at
+                 && Date.now() - j.finished_at > SHOW_AFTER_DONE_MS)
+        .forEach(j => removeJob(j.job_id));
+
+      if (mountedRef.current) {
+        setJobs(getRecentJobs(SHOW_AFTER_DONE_MS));
+      }
+    } finally {
+      tickingRef.current = false;
+    }
   }, []);
 
   useEffect(() => {
+    mountedRef.current = true;
     void tick();
     intervalRef.current = setInterval(tick, POLL_MS);
-    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
+    return () => {
+      mountedRef.current = false;
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
   }, [tick]);
 
   if (jobs.length === 0) return null;
