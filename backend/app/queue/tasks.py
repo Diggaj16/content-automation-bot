@@ -4,7 +4,7 @@ Each agent plan replaces its stub with the real implementation.
 """
 import asyncio
 
-from anthropic import Anthropic
+from anthropic import Anthropic, AsyncAnthropic
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -469,7 +469,7 @@ async def creation_agent_task(
     """
     import time
     from app.agents.creation.brand_context import get_brand_context
-    from app.agents.creation.content_generator import generate_content
+    from app.agents.creation.content_generator import async_generate_content
     from app.agents.creation.finance_flags import detect_finance_flags
     from app.agents.creation.db_writer import write_draft, upsert_cost_log
     from app.agents.scoring.embedder import embed_text
@@ -481,7 +481,7 @@ async def creation_agent_task(
     supabase = ctx["supabase"]
     start_time = time.time()
 
-    anthropic_client = Anthropic(api_key=settings.anthropic_api_key)
+    anthropic_client = AsyncAnthropic(api_key=settings.anthropic_api_key)
 
     from app.agents.embedding.client import make_embed_client
     embed_client = make_embed_client(
@@ -496,124 +496,178 @@ async def creation_agent_task(
     trace_entries: list[str] = []
     sonnet_in = sonnet_out = 0
 
-    for idea_id in idea_ids:
-        processed_count += 1
+    # Step 1 — Batch-fetch all requested ideas in one query
+    _CREATION_CONCURRENCY = 3
+
+    if idea_ids:
         try:
-            # Step 1 — Fetch idea
-            idea_resp = (
+            ideas_resp = (
                 supabase.table("ideas")
                 .select("*")
-                .eq("id", idea_id)
+                .in_("id", idea_ids)
                 .execute()
             )
-            if not idea_resp.data:
-                logger.warning(f"creation_agent_task: idea not found | id={idea_id}")
-                failure_count += 1
-                continue
-            idea = Idea(**idea_resp.data[0])
-
-            # Step 2 — Fetch source article context (optional)
-            article_context = ""
-            if idea.source_article_id:
-                art_resp = (
-                    supabase.table("raw_content")
-                    .select("structured_summary")
-                    .eq("id", str(idea.source_article_id))
-                    .execute()
-                )
-                if art_resp.data and art_resp.data[0].get("structured_summary"):
-                    s = art_resp.data[0]["structured_summary"]
-                    article_context = (
-                        f"Story: {s.get('story_narrative', '')}\n"
-                        f"Key data: {', '.join(s.get('key_data_points', []))}\n"
-                        f"Mechanism: {s.get('mechanism', '')}\n"
-                        f"Implications: {s.get('implications', '')}"
-                    )
-
-            # Step 3 — Embed idea text and get brand context
-            embedding: list[float] = []
-            brand_ctx = ""
-            embed_input = f"{idea.platform.value}: {idea.edited_angle or idea.angle}"
-            embedding = embed_text(embed_input, embed_client)
-            if embedding:
-                brand_ctx = get_brand_context(embedding, idea.platform.value, supabase)
-
-            # Step 3b — Retrieve KB context if needed
-            kb_context = ""
-            if content_type in ("kb_driven", "combined"):
-                if not embedding:
-                    logger.warning(
-                        "creation_agent_task: KB context requested but embedding unavailable",
-                        extra={"content_type": content_type, "idea_id": idea_id},
-                    )
-                    trace_entries.append(log_agent_decision(
-                        logger, "kb_context_skipped",
-                        "Voyage client unavailable — KB context omitted from prompt",
-                        {"idea_id": idea_id, "content_type": content_type},
-                    ))
-                elif embedding:
-                    try:
-                        kb_resp = supabase.rpc(
-                            "match_knowledge_base",
-                            {"query_embedding": embedding, "match_count": 8},
-                        ).execute()
-                        kb_rows = kb_resp.data or []
-                        if kb_rows:
-                            kb_context = "\n\n---\n\n".join(r["content"] for r in kb_rows)
-                    except Exception as kb_exc:
-                        logger.warning(
-                            "creation_agent_task: KB retrieval failed",
-                            extra={"idea_id": idea_id, "error": str(kb_exc)},
-                        )
-                        trace_entries.append(log_agent_decision(
-                            logger, "kb_retrieval_failed",
-                            "KB RPC failed — draft will be generated without KB context",
-                            {"idea_id": idea_id, "error": str(kb_exc)},
-                        ))
-
-            # Step 4 — Generate content with Claude Sonnet
-            gen_result = generate_content(
-                idea, article_context, brand_ctx, anthropic_client, settings.claude_model_heavy,
-                kb_context=kb_context,
-                content_type=content_type,
-            )
-            sonnet_in += gen_result.input_tokens
-            sonnet_out += gen_result.output_tokens
-
-            if gen_result.draft_create is None:
-                trace_entries.append(log_agent_decision(
-                    logger, "no_draft", "generate_content returned None",
-                    {"idea_id": idea_id, "platform": idea.platform.value},
-                ))
-                failure_count += 1
-                continue
-
-            # Step 5 — Detect finance flags
-            flags = detect_finance_flags(gen_result.draft_create.content_text)
-            draft_with_flags = DraftCreate(**{
-                **gen_result.draft_create.model_dump(),
-                "finance_flags": flags,
-            })
-
-            # Step 6 — Write draft to DB
-            draft_id = write_draft(supabase, draft_with_flags)
-            if draft_id:
-                draft_count += 1
-                trace_entries.append(log_agent_decision(
-                    logger, "draft_written", "Draft stored",
-                    {"draft_id": draft_id, "idea_id": idea_id, "platform": idea.platform.value},
-                ))
-            else:
-                failure_count += 1
-                trace_entries.append(log_agent_decision(
-                    logger, "draft_write_failed", "write_draft returned None",
-                    {"idea_id": idea_id},
-                ))
-
+            ideas_by_id = {str(r["id"]): Idea(**r) for r in (ideas_resp.data or [])}
         except Exception as exc:
-            logger.error(f"creation_agent_task: idea error | id={idea_id} | err={exc}")
-            errors.append({"idea_id": idea_id, "error": str(exc)})
+            logger.error(f"creation_agent_task: failed to batch-fetch ideas | err={exc}")
+            return {
+                "status": "error",
+                "processed": 0,
+                "drafts_created": 0,
+                "failures": len(idea_ids),
+                "duration_seconds": round(time.time() - start_time, 2),
+                "cost_usd": 0.0,
+                "error": str(exc),
+            }
+    else:
+        ideas_by_id = {}
+
+    # Report missing ideas upfront
+    for idea_id in idea_ids:
+        if idea_id not in ideas_by_id:
+            logger.warning(f"creation_agent_task: idea not found | id={idea_id}")
             failure_count += 1
+
+    ideas_to_process = [ideas_by_id[iid] for iid in idea_ids if iid in ideas_by_id]
+    processed_count = len(idea_ids)  # counts all requested, including not-found
+
+    # Semaphore caps concurrent Claude API calls
+    sem = asyncio.Semaphore(_CREATION_CONCURRENCY)
+
+    async def _process_idea(idea: Idea):
+        idea_id = str(idea.id)
+        local_errors: list[dict] = []
+        local_traces: list[str] = []
+        local_in = local_out = 0
+        drafted = 0
+        failed = 0
+
+        async with sem:
+            try:
+                # Step 2 — Fetch source article context (optional)
+                article_context = ""
+                if idea.source_article_id:
+                    art_resp = (
+                        supabase.table("raw_content")
+                        .select("structured_summary")
+                        .eq("id", str(idea.source_article_id))
+                        .execute()
+                    )
+                    if art_resp.data and art_resp.data[0].get("structured_summary"):
+                        s = art_resp.data[0]["structured_summary"]
+                        article_context = (
+                            f"Story: {s.get('story_narrative', '')}\n"
+                            f"Key data: {', '.join(s.get('key_data_points', []))}\n"
+                            f"Mechanism: {s.get('mechanism', '')}\n"
+                            f"Implications: {s.get('implications', '')}"
+                        )
+
+                # Step 3 — Embed idea text and get brand context
+                embedding: list[float] = []
+                brand_ctx = ""
+                embed_input = f"{idea.platform.value}: {idea.edited_angle or idea.angle}"
+                embedding = embed_text(embed_input, embed_client)
+                if embedding:
+                    brand_ctx = get_brand_context(embedding, idea.platform.value, supabase)
+
+                # Step 3b — Retrieve KB context if needed
+                kb_context = ""
+                if content_type in ("kb_driven", "combined"):
+                    if not embedding:
+                        logger.warning(
+                            "creation_agent_task: KB context requested but embedding unavailable",
+                            extra={"content_type": content_type, "idea_id": idea_id},
+                        )
+                        local_traces.append(log_agent_decision(
+                            logger, "kb_context_skipped",
+                            "Voyage client unavailable — KB context omitted from prompt",
+                            {"idea_id": idea_id, "content_type": content_type},
+                        ))
+                    else:
+                        try:
+                            kb_resp = supabase.rpc(
+                                "match_knowledge_base",
+                                {"query_embedding": embedding, "match_count": 8},
+                            ).execute()
+                            kb_rows = kb_resp.data or []
+                            if kb_rows:
+                                kb_context = "\n\n---\n\n".join(r["content"] for r in kb_rows)
+                        except Exception as kb_exc:
+                            logger.warning(
+                                "creation_agent_task: KB retrieval failed",
+                                extra={"idea_id": idea_id, "error": str(kb_exc)},
+                            )
+                            local_traces.append(log_agent_decision(
+                                logger, "kb_retrieval_failed",
+                                "KB RPC failed — draft will be generated without KB context",
+                                {"idea_id": idea_id, "error": str(kb_exc)},
+                            ))
+
+                # Step 4 — Generate content with Claude Sonnet (async)
+                gen_result = await async_generate_content(
+                    idea, article_context, brand_ctx, anthropic_client, settings.claude_model_heavy,
+                    kb_context=kb_context,
+                    content_type=content_type,
+                )
+                local_in += gen_result.input_tokens
+                local_out += gen_result.output_tokens
+
+                if gen_result.draft_create is None:
+                    local_traces.append(log_agent_decision(
+                        logger, "no_draft", "async_generate_content returned None",
+                        {"idea_id": idea_id, "platform": idea.platform.value},
+                    ))
+                    failed += 1
+                    return drafted, failed, local_in, local_out, local_errors, local_traces
+
+                # Step 5 — Detect finance flags
+                flags = detect_finance_flags(gen_result.draft_create.content_text)
+                draft_with_flags = DraftCreate(**{
+                    **gen_result.draft_create.model_dump(),
+                    "finance_flags": flags,
+                })
+
+                # Step 6 — Write draft to DB
+                draft_id = write_draft(supabase, draft_with_flags)
+                if draft_id:
+                    drafted += 1
+                    local_traces.append(log_agent_decision(
+                        logger, "draft_written", "Draft stored",
+                        {"draft_id": draft_id, "idea_id": idea_id, "platform": idea.platform.value},
+                    ))
+                else:
+                    failed += 1
+                    local_traces.append(log_agent_decision(
+                        logger, "draft_write_failed", "write_draft returned None",
+                        {"idea_id": idea_id},
+                    ))
+
+            except Exception as exc:
+                logger.error(f"creation_agent_task: idea error | id={idea_id} | err={exc}")
+                local_errors.append({"idea_id": idea_id, "error": str(exc)})
+                failed += 1
+
+        return drafted, failed, local_in, local_out, local_errors, local_traces
+
+    # Step 7 — Run all ideas concurrently (capped at _CREATION_CONCURRENCY)
+    gather_results = await asyncio.gather(
+        *[_process_idea(idea) for idea in ideas_to_process],
+        return_exceptions=True,
+    )
+
+    for outcome in gather_results:
+        if isinstance(outcome, Exception):
+            logger.error(f"creation_agent_task: unhandled gather exception | err={outcome}")
+            failure_count += 1
+            errors.append({"error": str(outcome)})
+        else:
+            d, f, tin, tout, errs, traces = outcome
+            draft_count += d
+            failure_count += f
+            sonnet_in += tin
+            sonnet_out += tout
+            errors.extend(errs)
+            trace_entries.extend(traces)
 
     duration = time.time() - start_time
 

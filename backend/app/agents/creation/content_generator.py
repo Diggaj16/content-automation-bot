@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
-from anthropic import Anthropic
+from anthropic import Anthropic, AsyncAnthropic
 
 from app.db.models import DraftCreate, Idea, Platform
 from app.utils.logging import get_logger
@@ -188,4 +188,102 @@ def generate_content(
         return ContentGenerationResult()
     except Exception as exc:
         logger.error("generate_content: API error", extra={"platform": platform, "err": str(exc)})
+        return ContentGenerationResult()
+
+
+async def async_generate_content(
+    idea: Idea,
+    article_context: str,
+    brand_context: str,
+    client: AsyncAnthropic,
+    model: str,
+    kb_context: str = "",
+    content_type: str = "news_driven",
+) -> ContentGenerationResult:
+    """
+    Async version of generate_content using AsyncAnthropic.
+    Identical logic — does not block the event loop.
+    """
+    angle = idea.edited_angle or idea.angle
+    platform = idea.platform.value
+    guide = _PLATFORM_GUIDES.get(platform, _PLATFORM_GUIDES["linkedin"])
+
+    # Truncate each context source to avoid token overflow
+    article_context = article_context[:_MAX_CONTEXT_CHARS] if article_context else ""
+    brand_context   = brand_context[:_MAX_CONTEXT_CHARS]   if brand_context   else ""
+    kb_context      = kb_context[:_MAX_CONTEXT_CHARS]      if kb_context      else ""
+
+    context_section = ""
+    if content_type == "kb_driven":
+        if kb_context:
+            context_section = f"\n\nKnowledge base context:\n{kb_context}"
+    elif content_type == "combined":
+        if article_context:
+            context_section = f"\n\nSource article context:\n{article_context}"
+        if kb_context:
+            context_section += f"\n\nKnowledge base context:\n{kb_context}"
+    else:
+        if article_context:
+            context_section = f"\n\nSource article context:\n{article_context}"
+
+    if brand_context:
+        context_section += f"\n\n{brand_context}"
+
+    user_prompt = (
+        f"Content angle: {angle}\n"
+        f"Platform: {platform}\n"
+        f"{context_section}\n\n"
+        f"Platform writing guide:\n{guide}\n\n"
+        "Return ONLY a JSON object with these exact keys:\n"
+        '{"content_text": "the complete content ready to post", '
+        '"reasoning": "1-2 sentences explaining why this angle works for this platform"}'
+    )
+
+    try:
+        message = await client.messages.create(
+            model=model,
+            max_tokens=_MAX_OUTPUT_TOKENS,
+            system=_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        input_tokens = message.usage.input_tokens
+        output_tokens = message.usage.output_tokens
+
+        if not message.content:
+            logger.warning("async_generate_content: empty content list in response")
+            return ContentGenerationResult(input_tokens=input_tokens, output_tokens=output_tokens)
+
+        raw = message.content[0].text
+        match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if not match:
+            logger.warning("async_generate_content: no JSON object found", extra={"platform": platform})
+            return ContentGenerationResult(input_tokens=input_tokens, output_tokens=output_tokens)
+
+        data = json.loads(match.group())
+        content_text = data.get("content_text", "").strip()
+        reasoning = data.get("reasoning", "").strip()
+
+        if not content_text:
+            logger.warning("async_generate_content: empty content_text", extra={"platform": platform})
+            return ContentGenerationResult(input_tokens=input_tokens, output_tokens=output_tokens)
+
+        draft_create = DraftCreate(
+            platform=idea.platform,
+            content_text=content_text,
+            agent_reasoning=reasoning or f"Generated for {platform}",
+            source_idea_id=idea.id,
+            finance_flags=[],
+        )
+
+        return ContentGenerationResult(
+            draft_create=draft_create,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
+
+    except json.JSONDecodeError as exc:
+        logger.warning("async_generate_content: JSON parse error", extra={"platform": platform, "err": str(exc)})
+        return ContentGenerationResult()
+    except Exception as exc:
+        logger.error("async_generate_content: API error", extra={"platform": platform, "err": str(exc)})
         return ContentGenerationResult()
