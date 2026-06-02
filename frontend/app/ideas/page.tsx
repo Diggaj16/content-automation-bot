@@ -356,11 +356,13 @@ export default function IdeasPage() {
         creationJob.start(
           r.job_id,
           "creation",
-          `Creation (${approvedIds.length} idea${approvedIds.length !== 1 ? "s" : ""})`
+          `Creation (${r.idea_count} idea${r.idea_count !== 1 ? "s" : ""})`
         );
       }
+      const countMismatch = r.idea_count !== approvedIds.length;
       setCreationMsg(
         `Queued ${r.idea_count} idea${r.idea_count !== 1 ? "s" : ""} as ${r.content_type} — job: ${r.job_id ?? "n/a"}`
+        + (countMismatch ? ` ⚠ ${approvedIds.length - r.idea_count} idea(s) were not queued.` : "")
       );
       setApprovedIds([]);
     } catch (e: unknown) {

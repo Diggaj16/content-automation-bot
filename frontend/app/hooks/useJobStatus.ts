@@ -28,6 +28,7 @@ export function useJobStatus() {
   const startTimeRef  = useRef<number>(0);
   const jobIdRef      = useRef<string | null>(null);
   const metaRef       = useRef<{ agent: string; label: string } | null>(null);
+  const errorCountRef = useRef<number>(0);
 
   const stop = useCallback(() => {
     if (intervalRef.current) {
@@ -40,6 +41,7 @@ export function useJobStatus() {
     stop();
     jobIdRef.current = null;
     metaRef.current = null;
+    errorCountRef.current = 0;
     setState({ phase: "idle", result: null, error: null, elapsed: 0 });
   }, [stop]);
 
@@ -52,9 +54,15 @@ export function useJobStatus() {
     try {
       res = await getJobStatus(jobId);
     } catch {
+      errorCountRef.current += 1;
       setState(prev => ({ ...prev, elapsed }));
       return;
     }
+
+    // If start() was called with a new job while we were awaiting, discard stale result
+    if (jobIdRef.current !== jobId) return;
+
+    errorCountRef.current = 0;  // reset on successful response
 
     const phase: JobPhase =
       res.status === "complete"   ? "complete"    :
@@ -90,6 +98,7 @@ export function useJobStatus() {
       jobIdRef.current   = jobId;
       metaRef.current    = { agent, label };
       startTimeRef.current = Date.now();
+      errorCountRef.current = 0;
       setState({ phase: "queued", result: null, error: null, elapsed: 0 });
 
       // Persist to store so GlobalJobMonitor picks it up on any page
