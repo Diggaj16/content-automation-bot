@@ -56,24 +56,58 @@ def _tavily_search(query: str, api_key: str, max_results: int = 3) -> list[dict]
 
 
 def _fetch_article_sync(url: str, sessions_dir: str | None = None):
-    """Synchronous wrapper around async fetch_article for use inside tools."""
+    """Synchronous wrapper around async fetch_article for use inside tools.
+
+    Creates the coroutine inside the worker thread (thread-safe), and uses
+    a non-blocking executor shutdown so a timeout doesn't freeze the caller.
+    """
     import asyncio
+    import concurrent.futures
     from app.agents.research.extractor import fetch_article
+
     try:
         loop = asyncio.get_event_loop()
         if loop.is_running():
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                future = pool.submit(
-                    asyncio.run,
-                    fetch_article(url, sessions_dir=sessions_dir)
+            # Create coroutine inside the thread to avoid cross-thread coroutine sharing
+            sessions = sessions_dir
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            try:
+                future = executor.submit(
+                    lambda: asyncio.run(fetch_article(url, sessions_dir=sessions))
                 )
                 return future.result(timeout=30)
+            except concurrent.futures.TimeoutError:
+                logger.warning("_fetch_article_sync timed out", extra={"url": url})
+                return None
+            finally:
+                # Non-blocking: don't wait for the potentially hung browser thread
+                executor.shutdown(wait=False, cancel_futures=True)
         else:
             return loop.run_until_complete(fetch_article(url, sessions_dir=sessions_dir))
     except Exception as exc:
         logger.warning("_fetch_article_sync failed", extra={"url": url, "error": str(exc)})
         return None
+
+
+def _is_safe_url(url: str) -> bool:
+    """Return False for private/loopback IPs to prevent SSRF via search results."""
+    import ipaddress
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+        if not host:
+            return False
+        # Resolve to IP if possible; if hostname is literal IP, parse directly
+        try:
+            addr = ipaddress.ip_address(host)
+            return addr.is_global and not addr.is_private and not addr.is_loopback and not addr.is_link_local
+        except ValueError:
+            # Not a literal IP — hostname DNS lookup would be needed; allow it
+            # (block only when host IS a literal private/loopback IP)
+            return True
+    except Exception:
+        return True  # on any parse error, allow — don't block legitimate URLs
 
 
 def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, anthropic_api_key: str | None = None) -> list:
@@ -111,6 +145,8 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
         site_url: full URL to open, e.g. https://www.livemint.com or https://economictimes.com/login"""
         try:
             from urllib.parse import urlparse
+            if not _is_safe_url(site_url):
+                return f"Error: Cannot open browser for private/internal URL '{site_url}'."
             domain = urlparse(site_url).netloc.lstrip("www.")
             job = await arq_pool.enqueue_job("login_site_task", login_url=site_url)
             job_id = job.job_id if job else "unknown"
@@ -615,8 +651,8 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
                 "unsubscribe_token": str(_uuid.uuid4()),
             }).execute()
             if resp.data:
-                return f"Added subscriber: {email}"
-            return f"Added subscriber: {email}"
+                return f"✓ Added subscriber: {email}"
+            return f"Error: Insert returned no data for {email!r} — may already exist."
         except Exception as exc:
             logger.warning("add_email_subscriber failed", extra={"email": email, "error": str(exc)})
             return f"Error adding subscriber: {exc}"
@@ -773,7 +809,7 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
         articles = []
         for r in results:
             url = r.get("url", "")
-            if not url:
+            if not url or not _is_safe_url(url):
                 continue
             content = _fetch_article_sync(url)
             if content is None or content.paywall_detected or content.word_count < 50:
@@ -818,7 +854,7 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
         article_text = ""
         for r in scraped:
             url = r.get("url", "")
-            if not url:
+            if not url or not _is_safe_url(url):
                 continue
             content = _fetch_article_sync(url)
             if content and not content.paywall_detected and content.word_count >= 50:
@@ -826,7 +862,11 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
                 break  # one good article is enough for generation
 
         if not article_text:
-            article_text = f"General knowledge about: {topic}"
+            return (
+                f"Error: Could not retrieve source material for '{topic}'. "
+                f"Web search returned no accessible articles. "
+                f"Please try a more specific query or provide source text directly."
+            )
 
         # Step 2 — Get brand voice examples
         brand_examples = ""
@@ -906,7 +946,7 @@ Write the full post now. Return only the post text, nothing else."""
 
     return [
         # Pipeline triggers
-        trigger_research, trigger_scoring, trigger_creation,
+        trigger_research, trigger_scoring,
         # Ideas (Gate 1)
         get_ideas, approve_idea, reject_idea, bulk_reject_ideas, send_ideas_to_creation,
         # Drafts (Gate 2)
@@ -921,8 +961,6 @@ Write the full post now. Return only the post text, nothing else."""
         add_curated_site, remove_curated_site, list_curated_sites,
         # Auth
         login_to_site,
-        # Legacy
-        get_pending_ideas,
         # Web search & on-demand generation
         search_web, search_and_scrape, generate_post, save_draft,
     ]

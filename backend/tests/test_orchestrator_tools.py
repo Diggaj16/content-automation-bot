@@ -34,19 +34,6 @@ async def test_trigger_research_with_topic():
     pool.enqueue_job.assert_called_once_with("research_agent_task", topic="SEBI update")
 
 
-# ── get_pending_ideas ─────────────────────────────────────────────────────────
-
-def test_get_pending_ideas_returns_data():
-    sb = MagicMock()
-    sb.table.return_value.select.return_value.eq.return_value.order.return_value.limit.return_value.execute.return_value.data = [
-        {"id": "idea-1", "angle": "Some idea", "platform": "linkedin", "score": 7.5}
-    ]
-    tools, _, _ = _make_tools(sb_mock=sb)
-    get_pending = next(t for t in tools if t.name == "get_pending_ideas")
-    result = get_pending.invoke({"limit": 10})
-    assert "idea-1" in result or "Some idea" in result
-
-
 # ── list_curated_sites ────────────────────────────────────────────────────────
 
 def test_list_curated_sites_returns_data():
