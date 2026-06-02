@@ -911,7 +911,9 @@ Write the full post now. Return only the post text, nothing else."""
                 system=system,
                 messages=[{"role": "user", "content": user_prompt}],
             )
-            post_text = message.content[0].text.strip() if message.content else ""
+            from anthropic.types import TextBlock as _TextBlock
+            first = message.content[0] if message.content else None
+            post_text = first.text.strip() if isinstance(first, _TextBlock) else ""
             if not post_text:
                 return "Error: Claude returned empty response."
             return (

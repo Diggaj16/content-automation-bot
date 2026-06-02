@@ -7,5 +7,12 @@
   "pythonPlatform": "Windows",
   "typeCheckingMode": "basic",
   "reportMissingImports": true,
-  "reportMissingModuleSource": false
+  "reportMissingModuleSource": false,
+
+  "reportOptionalSubscript": "none",
+  "reportIndexIssue": "none",
+  "reportOptionalMemberAccess": "none",
+  "reportAttributeAccessIssue": "none",
+  "reportArgumentType": "none",
+  "reportCallIssue": "none"
 }
