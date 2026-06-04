@@ -55,11 +55,12 @@ def _tavily_search(query: str, api_key: str, max_results: int = 3) -> list[dict]
         return []
 
 
-def _fetch_article_sync(url: str, sessions_dir: str | None = None):
+def _fetch_article_sync(url: str):
     """Synchronous wrapper around async fetch_article for use inside tools.
 
     Creates the coroutine inside the worker thread (thread-safe), and uses
     a non-blocking executor shutdown so a timeout doesn't freeze the caller.
+    Note: fetch_article signature is (url, *, timeout_ms, browser) — no sessions_dir.
     """
     import asyncio
     import concurrent.futures
@@ -68,48 +69,76 @@ def _fetch_article_sync(url: str, sessions_dir: str | None = None):
     try:
         loop = asyncio.get_event_loop()
         if loop.is_running():
-            # Create coroutine inside the thread to avoid cross-thread coroutine sharing
-            sessions = sessions_dir
             executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
             try:
                 future = executor.submit(
-                    lambda: asyncio.run(fetch_article(url, sessions_dir=sessions))
+                    lambda: asyncio.run(fetch_article(url))
                 )
                 return future.result(timeout=30)
             except concurrent.futures.TimeoutError:
                 logger.warning("_fetch_article_sync timed out", extra={"url": url})
                 return None
             finally:
-                # Non-blocking: don't wait for the potentially hung browser thread
                 executor.shutdown(wait=False, cancel_futures=True)
         else:
-            return loop.run_until_complete(fetch_article(url, sessions_dir=sessions_dir))
+            return loop.run_until_complete(fetch_article(url))
     except Exception as exc:
         logger.warning("_fetch_article_sync failed", extra={"url": url, "error": str(exc)})
         return None
 
 
 def _is_safe_url(url: str) -> bool:
-    """Return False for private/loopback IPs to prevent SSRF via search results."""
+    """Return False for private/loopback IPs to prevent SSRF via search results.
+
+    Resolves hostnames via DNS so DNS-rebinding attacks (e.g. attacker.com → 10.0.0.1)
+    are also blocked. Fails closed on resolution errors.
+    """
     import ipaddress
+    import socket
     from urllib.parse import urlparse
     try:
         parsed = urlparse(url)
         host = parsed.hostname or ""
         if not host:
             return False
-        # Resolve to IP if possible; if hostname is literal IP, parse directly
-        try:
-            addr = ipaddress.ip_address(host)
-            return addr.is_global and not addr.is_private and not addr.is_loopback and not addr.is_link_local
-        except ValueError:
-            # Not a literal IP — block well-known internal hostnames explicitly
-            _BLOCKED_HOSTNAMES = {"localhost", "ip6-localhost", "ip6-loopback"}
-            if host.lower() in _BLOCKED_HOSTNAMES or host.startswith("169.254."):
+
+        def _is_safe_ip(ip_str: str) -> bool:
+            try:
+                addr = ipaddress.ip_address(ip_str)
+                return (
+                    addr.is_global
+                    and not addr.is_private
+                    and not addr.is_loopback
+                    and not addr.is_link_local
+                    and not addr.is_reserved
+                )
+            except ValueError:
                 return False
-            return True
+
+        # Try literal IP first (no DNS needed)
+        try:
+            ipaddress.ip_address(host)
+            return _is_safe_ip(host)
+        except ValueError:
+            pass  # Not a literal IP — resolve via DNS below
+
+        # Block known-bad hostnames before DNS hit
+        _BLOCKED_HOSTNAMES = {"localhost", "ip6-localhost", "ip6-loopback"}
+        if host.lower() in _BLOCKED_HOSTNAMES:
+            return False
+
+        # Resolve hostname → IPs; fail closed if resolution fails or returns private IP
+        try:
+            results = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+            resolved_ips = {r[4][0] for r in results}
+            return all(_is_safe_ip(ip) for ip in resolved_ips)
+        except (socket.gaierror, OSError):
+            # DNS resolution failed — fail closed (block)
+            logger.warning("_is_safe_url: DNS resolution failed", extra={"host": host})
+            return False
+
     except Exception:
-        return True  # on any parse error, allow — don't block legitimate URLs
+        return False  # fail closed on any unexpected error
 
 
 def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, anthropic_api_key: str | None = None) -> list:
@@ -193,32 +222,6 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
             return f"Error triggering creation: {exc}"
 
     @tool
-    def get_pending_ideas(limit: int = 10) -> str:
-        """Return up to `limit` ideas awaiting approval at Gate 1. Shows id, angle, platform, and score."""
-        try:
-            resp = (
-                supabase.table("ideas")
-                .select("id, angle, platform, score, created_at")
-                .eq("approval_status", "pending_approval")
-                .order("score", desc=True)
-                .limit(limit)
-                .execute()
-            )
-            ideas = resp.data or []
-            if not ideas:
-                return "No pending ideas at Gate 1."
-            lines = [
-                f"[{i['platform']}] score={i.get('score'):.1f} | {i['angle']} (id: {i['id']})"
-                if isinstance(i.get('score'), (int, float))
-                else f"[{i['platform']}] {i['angle']} (id: {i['id']})"
-                for i in ideas
-            ]
-            return f"{len(ideas)} pending idea(s):\n" + "\n".join(lines)
-        except Exception as exc:
-            logger.warning("get_pending_ideas failed", extra={"error": str(exc)})
-            return f"Error fetching pending ideas: {exc}"
-
-    @tool
     def get_analytics_summary() -> str:
         """Return last 5 run logs and average performance per platform from content analytics."""
         try:
@@ -273,6 +276,8 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
                 return f"Error: Invalid URL '{url}'. Must start with http:// or https://."
         except Exception:
             return f"Error: Invalid URL '{url}'."
+        if not _is_safe_url(url):
+            return f"Error: URL '{url}' resolves to a private/internal address and cannot be added."
 
         try:
             resp = supabase.table("curated_sites").insert({
@@ -576,14 +581,26 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
         The creation agent will use these examples to match your brand voice when generating new posts.
         platform: 'linkedin', 'twitter', 'blog', or 'email'."""
         try:
-            resp = supabase.table("brand_memory").insert({
+            from app.config import get_settings
+            from app.agents.embedding.client import make_embed_client
+            _settings = get_settings()
+            _embed = make_embed_client(
+                google_api_key=_settings.google_api_key,
+                local_model=_settings.local_embedding_model,
+            )
+            embedding = _embed.embed_one(content)
+            row = {
                 "content": content,
                 "platform": platform,
                 "performance_metrics": {},
-            }).execute()
+            }
+            if embedding:
+                row["embedding"] = embedding
+            resp = supabase.table("brand_memory").insert(row).execute()
+            embedded = "with embedding" if embedding else "without embedding (embedder unavailable)"
             if resp.data:
-                return f"Saved to brand memory for {platform} (id={resp.data[0].get('id', '?')[:8]}...)"
-            return f"Saved to brand memory for {platform}."
+                return f"Saved to brand memory for {platform} {embedded} (id={resp.data[0].get('id', '?')[:8]}...)"
+            return f"Saved to brand memory for {platform} {embedded}."
         except Exception as exc:
             logger.warning("add_brand_memory failed", extra={"error": str(exc)})
             return f"Error adding brand memory: {exc}"

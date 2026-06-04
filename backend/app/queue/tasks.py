@@ -9,21 +9,27 @@ from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-# Max simultaneous article fetches PER SITE
-_ARTICLE_CONCURRENCY = 3
+# Max simultaneous article fetches PER SITE — keep low: each fetch launches an
+# Edge process; too many at once (7 sites × 3 = 21 browsers) starves the machine
+# and pushes 4-second fetches past the 60s hard timeout.
+_ARTICLE_CONCURRENCY = 1
+
+# Hard per-article timeout — generous because Edge under load is slow to start.
+_ARTICLE_FETCH_TIMEOUT = 90
 
 # NOTE: _GLOBAL_FETCH_SEM is created inside research_agent_task (not here) because
 # asyncio.Semaphore created outside a running event loop is broken in Python 3.10+.
 
-# URL path patterns that are never news articles — skip without fetching
+# URL path patterns that are genuine non-article pages — skip without fetching.
+# Only list actual tool/data pages here — editorial sections are fair game.
 _NON_ARTICLE_PATH_PREFIXES = (
-    # Livemint non-article paths
+    # Livemint data/tool pages (not editorial)
     "/market/market-stats/",
     "/market-stats/",
     "/tools-calculators/",
     "/loans/",
     "/topic/",
-    # Business Standard non-article paths
+    # Business Standard index/data pages
     "/markets/nse-nifty-indices-",
     "/markets/bse-sensex-indices-",
     "/markets/nse-nifty-midcap",
@@ -43,6 +49,7 @@ _NON_ARTICLE_PATH_PREFIXES = (
     "/personal-finance/retirement-calculator",
     "/personal-finance/home-loan-calculator",
     "/personal-finance/education-loan-calculator",
+    "/investor-communication",
 )
 
 
@@ -59,8 +66,9 @@ async def research_agent_task(
         url:   Optional specific URL to fast-track (e.g. breaking news)
     """
     import time
+    from playwright.async_api import async_playwright
+    from app.agents.research.extractor import BROWSER_ARGS, fetch_article, normalize_url
     from app.agents.research.scraper import scrape_homepage
-    from app.agents.research.extractor import fetch_article, normalize_url
     from app.agents.research.filters import is_url_seen, is_article_fresh, is_article_long_enough
     from app.agents.research.prescorer import async_pre_score_headlines
     from app.agents.research.summariser import async_summarise_article
@@ -77,13 +85,19 @@ async def research_agent_task(
 
     anthropic_client = AsyncAnthropic(api_key=settings.anthropic_api_key)
 
-    # Created here (inside the running event loop) to avoid Python 3.10+ asyncio warnings.
-    # Caps total concurrent browser instances across all parallel sites.
-    _global_fetch_sem = asyncio.Semaphore(5)
+    # One shared browser for the whole run — pages are cheap, browser launches are not.
+    # Each fetch creates a new context (isolated cookies/storage) then closes it.
+    _pw = await async_playwright().start()   # .start() is the correct non-context-manager API
+    _browser = await _pw.chromium.launch(
+        channel="msedge", headless=True, args=BROWSER_ARGS
+    )
+
+    # Semaphore limits concurrent page opens to avoid memory pressure.
+    _global_fetch_sem = asyncio.Semaphore(3)
     # Serialise Supabase batch-dedup calls so 7 parallel sites don't exhaust the connection pool.
     _dedup_sem = asyncio.Semaphore(2)
-    # Serialise Anthropic pre-score calls — 7 simultaneous calls hit rate limits.
-    _prescore_sem = asyncio.Semaphore(2)
+    # No semaphore for pre-score: the prescorer's own retry+backoff handles rate
+    # limits. A semaphore here would hold while sleeping, blocking all other sites.
 
     processed_count = 0
     success_count = 0
@@ -119,8 +133,8 @@ async def research_agent_task(
         nonlocal processed_count, success_count, failure_count, skipped_count
         nonlocal haiku_in, haiku_out, sonnet_in, sonnet_out
         try:
-            # Step 1 — Scrape section page
-            links = await scrape_homepage(site.section_url, site.site_name)
+            # Step 1 — Scrape section page (reuses shared browser)
+            links = await scrape_homepage(site.section_url, site.site_name, browser=_browser)
             if not links:
                 await asyncio.to_thread(
                     record_site_failure, supabase, site.id,
@@ -130,12 +144,12 @@ async def research_agent_task(
                     failure_count += 1
                 return
 
-            # Step 2 — Batch pre-score (serialised to avoid Anthropic rate limits)
+            # Step 2 — Batch pre-score.
+            # Retry + backoff is handled inside async_pre_score_headlines.
             titles = [lnk.title for lnk in links]
-            async with _prescore_sem:
-                pre_result = await async_pre_score_headlines(
-                    titles, anthropic_client, settings.claude_model_light
-                )
+            pre_result = await async_pre_score_headlines(
+                titles, anthropic_client, settings.claude_model_light
+            )
             async with _lock:
                 haiku_in += pre_result.input_tokens
                 haiku_out += pre_result.output_tokens
@@ -145,18 +159,37 @@ async def research_agent_task(
                     f"pre_score count mismatch: {len(links)} links vs {len(pre_result.scores)} scores"
                 )
 
-            # Step 3 — Filter: pre-score threshold + skip known non-article URL patterns
+            # Step 3 — Filter: pre-score threshold + skip known non-article URL patterns.
+            # If pre-scoring failed entirely, skip the threshold gate so downstream
+            # filters (freshness, length, dedup) still have a chance to run.
             from urllib.parse import urlparse as _up
-            score_filtered = [
-                (link, score)
-                for link, score in zip(links, pre_result.scores)
-                if score >= site.pre_score_threshold
-                and not any(
-                    _up(link.url).path.startswith(p)
-                    for p in _NON_ARTICLE_PATH_PREFIXES
-                )
-            ]
-            low_score_count = len(links) - len(score_filtered)
+            if pre_result.failed:
+                score_filtered = [
+                    (link, 0.0)
+                    for link in links
+                    if not any(
+                        _up(link.url).path.startswith(p)
+                        for p in _NON_ARTICLE_PATH_PREFIXES
+                    )
+                ]
+                low_score_count = 0
+            else:
+                score_filtered = [
+                    (link, score)
+                    for link, score in zip(links, pre_result.scores)
+                    if score >= site.pre_score_threshold
+                    and not any(
+                        _up(link.url).path.startswith(p)
+                        for p in _NON_ARTICLE_PATH_PREFIXES
+                    )
+                ]
+                low_score_count = len(links) - len(score_filtered)
+
+            logger.info(
+                f"research: site={site.site_name} scraped={len(links)} "
+                f"pre_score_pass={len(score_filtered)} dropped_low_score={low_score_count} "
+                f"threshold={site.pre_score_threshold} prescore_failed={pre_result.failed}"
+            )
             async with _lock:
                 skipped_count += low_score_count
 
@@ -202,7 +235,19 @@ async def research_agent_task(
             async def _fetch(link_url: str):
                 async with _global_fetch_sem:   # global cap first (created in running event loop)
                     async with _site_sem:        # then per-site cap
-                        return await fetch_article(link_url, sessions_dir=settings.browser_sessions_dir)
+                        try:
+                            # Fresh browser per article — shared browser causes
+                            # Livemint/BS to throttle sequential requests from the
+                            # same fingerprint. Standalone fetches take ~4s each.
+                            return await asyncio.wait_for(
+                                fetch_article(link_url),
+                                timeout=_ARTICLE_FETCH_TIMEOUT,
+                            )
+                        except asyncio.TimeoutError:
+                            logger.warning(
+                                f"research: article fetch hard-timeout ({_ARTICLE_FETCH_TIMEOUT}s) | url={link_url}"
+                            )
+                            raise  # propagates as an exception result in return_exceptions=True gather
 
             fetch_results = await asyncio.gather(
                 *[_fetch(link.url) for link, _, _ in to_fetch],
@@ -228,19 +273,6 @@ async def research_agent_task(
                             logger, "skip_paywall", "Paywall or thin content",
                             {"url": link.url, "word_count": content.word_count},
                         ))
-                        from pathlib import Path
-                        from urllib.parse import urlparse as _urlparse
-                        _domain = _urlparse(link.url).netloc.lstrip("www.")
-                        _has_session = (
-                            Path(settings.browser_sessions_dir).expanduser() / _domain
-                        ).exists()
-                        if not _has_session:
-                            send_slack_alert(
-                                settings.slack_webhook_url,
-                                f"🔐 *Paywall hit* on `{_domain}`\n"
-                                f"Tell the orchestrator: *login to {link.url}*\n"
-                                f"A browser will open — log in once and all future scrapes will use your saved session.",
-                            )
                         async with _lock:
                             skipped_count += 1
                         continue
@@ -301,7 +333,17 @@ async def research_agent_task(
                 record_site_failure, supabase, site.id, str(exc), settings.site_failure_pause_threshold
             )
 
-    await asyncio.gather(*[_process_site(site) for site in sites])
+    try:
+        await asyncio.gather(*[_process_site(site) for site in sites])
+    finally:
+        try:
+            await _browser.close()
+        except Exception:
+            pass
+        try:
+            await _pw.stop()
+        except Exception:
+            pass
 
     duration = time.time() - start_time
 
@@ -422,6 +464,22 @@ async def scoring_agent_task(ctx: dict) -> dict:
 
     logger.info(f"scoring_agent_task: {len(articles)} unprocessed articles")
 
+    # Fetch the latest rejection-pattern summary so the idea generator avoids
+    # angles the user has already rejected.
+    rejection_summary = ""
+    try:
+        _ds = (
+            supabase.table("user_decision_summaries")
+            .select("summary_text")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if _ds.data:
+            rejection_summary = _ds.data[0]["summary_text"]
+    except Exception:
+        pass  # non-fatal — scoring proceeds without the summary
+
     max_ideas_per_site = settings.max_ideas_per_site
     site_idea_counts: dict[str, int] = {}
 
@@ -444,7 +502,7 @@ async def scoring_agent_task(ctx: dict) -> dict:
             )
             embedding: list[float] = embed_text(embed_input, embed_client)
 
-            idea_result = generate_ideas(article, anthropic_client, settings.claude_model_heavy)
+            idea_result = generate_ideas(article, anthropic_client, settings.claude_model_heavy, rejection_summary=rejection_summary)
             sonnet_in += idea_result.input_tokens
             sonnet_out += idea_result.output_tokens
 
@@ -495,7 +553,7 @@ async def scoring_agent_task(ctx: dict) -> dict:
     total_tokens = sonnet_in + sonnet_out
     token_cost_dict = {"sonnet": sonnet_cost, "total_usd": round(total_usd, 6)}
 
-    upsert_cost_log(supabase, "scoring_agent", total_usd=total_usd, token_count=total_tokens)
+    await asyncio.to_thread(upsert_cost_log, supabase, "scoring_agent", total_usd=total_usd, token_count=total_tokens)
 
     run_log = RunLogCreate(
         agent_name="scoring_agent",
@@ -755,7 +813,7 @@ async def creation_agent_task(
     total_tokens = sonnet_in + sonnet_out
     token_cost_dict = {"sonnet": sonnet_cost, "total_usd": round(total_usd, 6)}
 
-    upsert_cost_log(supabase, "creation_agent", total_usd=total_usd, token_count=total_tokens)
+    await asyncio.to_thread(upsert_cost_log, supabase, "creation_agent", total_usd=total_usd, token_count=total_tokens)
 
     run_log = RunLogCreate(
         agent_name="creation_agent",
@@ -797,55 +855,48 @@ async def creation_agent_task(
 
 async def login_site_task(ctx: dict, *, login_url: str) -> dict:
     """
-    Open a VISIBLE browser at login_url so the user can log in manually.
-
-    The browser uses a persistent profile — cookies are saved automatically on close.
-    All future fetch_article calls for this domain reuse the saved session.
+    Open a VISIBLE Edge browser at login_url so the user can log in manually.
+    Uses raw Playwright with a persistent user-data-dir so cookies survive.
     Triggered via the orchestrator 'login_to_site' tool.
     """
-    from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
     from pathlib import Path
     from urllib.parse import urlparse
+    from playwright.async_api import async_playwright
 
     settings = ctx["settings"]
+    import re as _re
     domain = urlparse(login_url).netloc.lstrip("www.")
+    if not _re.fullmatch(r"[a-zA-Z0-9.\-]+", domain):
+        logger.error("login_site_task: unsafe domain string rejected", extra={"domain": domain})
+        return {"status": "error", "error": f"Unsafe domain: {domain!r}"}
     profile_dir = Path(settings.browser_sessions_dir).expanduser() / domain
     profile_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info("login_site_task: opening browser", extra={"domain": domain, "url": login_url})
 
-    browser_cfg = BrowserConfig(
-        headless=False,              # visible — user must interact
-        verbose=False,
-        user_data_dir=str(profile_dir),
-        use_persistent_context=True, # automatically saves cookies/localStorage on close
-    )
-
-    # Waits until the URL changes away from the login page (i.e. redirect after auth)
-    # or times out after 5 minutes.
-    _wait_js = """
-(async () => {
-    const startUrl = window.location.href;
-    const start = Date.now();
-    while (Date.now() - start < 300000) {
-        const cur = window.location.href;
-        if (cur !== startUrl && !/login|signin|sign-in/i.test(cur)) break;
-        await new Promise(r => setTimeout(r, 2000));
-    }
-    await new Promise(r => setTimeout(r, 1500));
-})();
-"""
-
-    run_cfg = CrawlerRunConfig(
-        cache_mode=CacheMode.BYPASS,
-        page_timeout=320_000,        # 5 min 20 sec — must exceed JS wait time
-        js_code=_wait_js,
-        delay_before_return_html=1500,
-    )
-
     try:
-        async with AsyncWebCrawler(config=browser_cfg) as crawler:
-            await crawler.arun(url=login_url, config=run_cfg)
+        async with async_playwright() as p:
+            # Persistent context saves cookies/localStorage automatically when closed
+            context = await p.chromium.launch_persistent_context(
+                str(profile_dir),
+                channel="msedge",
+                headless=False,           # user must see and interact
+                args=["--no-proxy-server", "--disable-ipv6"],
+            )
+            page = await context.new_page()
+            await page.goto(login_url, timeout=30_000)
+
+            # Poll until the URL leaves the login page (successful auth redirect)
+            # or 5 minutes pass.
+            import asyncio as _asyncio
+            for _ in range(150):          # 150 × 2 s = 5 min
+                await _asyncio.sleep(2)
+                if not any(kw in page.url for kw in ("login", "signin", "sign-in")):
+                    break
+
+            await _asyncio.sleep(1.5)    # let any final redirects settle
+            await context.close()
+
         logger.info("login_site_task: session saved", extra={"domain": domain})
         return {"status": "done", "domain": domain, "profile_dir": str(profile_dir)}
     except Exception as exc:

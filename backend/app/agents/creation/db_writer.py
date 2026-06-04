@@ -30,6 +30,7 @@ def write_draft(supabase, draft_create: DraftCreate) -> Optional[str]:
         resp = (
             supabase.table("drafts")
             .upsert(payload, on_conflict="source_idea_id,platform")
+            .select("id")
             .execute()
         )
         if not resp.data:
@@ -46,8 +47,8 @@ def upsert_cost_log(supabase, agent_name: str, total_usd: float, token_count: in
     Accumulate daily cost for cost_log table.
     Read-then-write (supabase-py cannot do incremental upsert arithmetic). Never raises.
     """
-    from datetime import date
-    today = date.today().isoformat()
+    from datetime import datetime, timezone
+    today = datetime.now(timezone.utc).date().isoformat()
     try:
         existing = (
             supabase.table("cost_log")

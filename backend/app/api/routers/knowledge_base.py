@@ -39,7 +39,8 @@ async def upload_kb_file(
     try:
         text = extract_text(filename, content_bytes)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        logger.warning("kb: unsupported or malformed file", extra={"source_file": filename, "error": str(exc)})
+        raise HTTPException(status_code=422, detail="Unsupported or malformed file.")
     except Exception as exc:
         logger.warning("kb: text extraction failed", extra={"source_file": filename, "error": str(exc)})
         raise HTTPException(status_code=500, detail="Failed to extract text from file.")
