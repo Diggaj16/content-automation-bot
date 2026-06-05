@@ -190,20 +190,33 @@ def generate_content(
             logger.warning("generate_content: empty content list in response")
             return ContentGenerationResult(input_tokens=input_tokens, output_tokens=output_tokens)
 
-        raw = message.content[0].text
+        raw = message.content[0].text.strip()
 
-        # Strip markdown fences if present
+        # Try JSON extraction first
+        content_text = ""
+        reasoning = ""
         match = re.search(r"\{.*\}", raw, re.DOTALL)
-        if not match:
-            logger.warning("generate_content: no JSON object found in response", extra={"platform": platform})
-            return ContentGenerationResult(input_tokens=input_tokens, output_tokens=output_tokens)
+        if match:
+            try:
+                data = json.loads(match.group())
+                content_text = data.get("content_text", "").strip()
+                reasoning = data.get("reasoning", "").strip()
+            except json.JSONDecodeError:
+                pass
 
-        data = json.loads(match.group())
-        content_text = data.get("content_text", "").strip()
-        reasoning = data.get("reasoning", "").strip()
+        # Fallback: if JSON parse failed or returned empty, use the raw response directly.
+        # This handles cases where Claude follows the format guide so literally it
+        # forgets to wrap in JSON — the raw text IS the post.
+        if not content_text and raw and len(raw.split()) > 20:
+            logger.info(
+                "generate_content: no JSON found, using raw response as content_text",
+                extra={"platform": platform, "words": len(raw.split())},
+            )
+            content_text = raw
+            reasoning = f"Generated for {platform}"
 
         if not content_text:
-            logger.warning("generate_content: empty content_text", extra={"platform": platform})
+            logger.warning("generate_content: empty response", extra={"platform": platform})
             return ContentGenerationResult(input_tokens=input_tokens, output_tokens=output_tokens)
 
         draft_create = DraftCreate(
@@ -290,18 +303,29 @@ async def async_generate_content(
             logger.warning("async_generate_content: empty content list in response")
             return ContentGenerationResult(input_tokens=input_tokens, output_tokens=output_tokens)
 
-        raw = message.content[0].text
-        match = re.search(r"\{.*\}", raw, re.DOTALL)
-        if not match:
-            logger.warning("async_generate_content: no JSON object found", extra={"platform": platform})
-            return ContentGenerationResult(input_tokens=input_tokens, output_tokens=output_tokens)
+        raw = message.content[0].text.strip()
 
-        data = json.loads(match.group())
-        content_text = data.get("content_text", "").strip()
-        reasoning = data.get("reasoning", "").strip()
+        content_text = ""
+        reasoning = ""
+        match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if match:
+            try:
+                data = json.loads(match.group())
+                content_text = data.get("content_text", "").strip()
+                reasoning = data.get("reasoning", "").strip()
+            except json.JSONDecodeError:
+                pass
+
+        if not content_text and raw and len(raw.split()) > 20:
+            logger.info(
+                "async_generate_content: no JSON found, using raw response as content_text",
+                extra={"platform": platform, "words": len(raw.split())},
+            )
+            content_text = raw
+            reasoning = f"Generated for {platform}"
 
         if not content_text:
-            logger.warning("async_generate_content: empty content_text", extra={"platform": platform})
+            logger.warning("async_generate_content: empty response", extra={"platform": platform})
             return ContentGenerationResult(input_tokens=input_tokens, output_tokens=output_tokens)
 
         draft_create = DraftCreate(

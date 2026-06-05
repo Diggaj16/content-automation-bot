@@ -29,7 +29,7 @@ def write_draft(supabase, draft_create: DraftCreate) -> Optional[str]:
         }
         resp = (
             supabase.table("drafts")
-            .upsert(payload, on_conflict="source_idea_id,platform")
+            .insert(payload)
             .select("id")
             .execute()
         )
