@@ -769,12 +769,23 @@ async def creation_agent_task(
                 local_in += gen_result.input_tokens
                 local_out += gen_result.output_tokens
 
+                def _set_draft_status(status: str, error: str = "") -> None:
+                    """Update draft_status on the idea row. Never raises."""
+                    try:
+                        update = {"draft_status": status}
+                        if error:
+                            update["agent_reasoning"] = error[:500]
+                        supabase.table("ideas").update(update).eq("id", idea_id).execute()
+                    except Exception:
+                        pass
+
                 if gen_result.draft_create is None:
                     local_traces.append(log_agent_decision(
                         logger, "no_draft", "async_generate_content returned None",
                         {"idea_id": idea_id, "platform": idea.platform.value},
                     ))
                     failed += 1
+                    _set_draft_status("failed", "Content generation returned empty")
                     return drafted, failed, local_in, local_out, local_errors, local_traces
 
                 # Step 5 — Detect finance flags
@@ -788,12 +799,14 @@ async def creation_agent_task(
                 draft_id = write_draft(supabase, draft_with_flags)
                 if draft_id:
                     drafted += 1
+                    _set_draft_status("done")
                     local_traces.append(log_agent_decision(
                         logger, "draft_written", "Draft stored",
                         {"draft_id": draft_id, "idea_id": idea_id, "platform": idea.platform.value},
                     ))
                 else:
                     failed += 1
+                    _set_draft_status("failed", "write_draft returned None (DB insert failed)")
                     local_traces.append(log_agent_decision(
                         logger, "draft_write_failed", "write_draft returned None",
                         {"idea_id": idea_id},
@@ -803,6 +816,12 @@ async def creation_agent_task(
                 logger.error(f"creation_agent_task: idea error | id={idea_id} | err={exc}")
                 local_errors.append({"idea_id": idea_id, "error": str(exc)})
                 failed += 1
+                try:
+                    supabase.table("ideas").update(
+                        {"draft_status": "failed", "agent_reasoning": str(exc)[:500]}
+                    ).eq("id", idea_id).execute()
+                except Exception:
+                    pass
 
         return drafted, failed, local_in, local_out, local_errors, local_traces
 

@@ -505,6 +505,39 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
             logger.warning("send_ideas_to_creation failed", extra={"error": str(exc)})
             return f"Error triggering creation: {exc}"
 
+    @tool
+    async def retry_failed_drafts(content_type: str = "news_driven") -> str:
+        """Retry draft generation for all ideas where draft creation previously failed.
+        Finds ideas with draft_status='failed' and re-queues them for the creation agent."""
+        if arq_pool is None:
+            return "Error: job queue unavailable (Redis not connected)."
+        try:
+            resp = (
+                supabase.table("ideas")
+                .select("id")
+                .eq("draft_status", "failed")
+                .eq("approval_status", "approved")
+                .execute()
+            )
+            failed_ids = [r["id"] for r in (resp.data or [])]
+            if not failed_ids:
+                return "No failed draft ideas found."
+            # Reset status to pending before retrying
+            supabase.table("ideas").update({"draft_status": "pending"}).in_("id", failed_ids).execute()
+            job = await arq_pool.enqueue_job(
+                "creation_agent_task",
+                idea_ids=failed_ids,
+                content_type=content_type,
+            )
+            job_id = job.job_id if job else "unknown"
+            return (
+                f"✓ Retrying draft generation for {len(failed_ids)} failed idea(s) "
+                f"(job_id={job_id}). Check /drafts when complete."
+            )
+        except Exception as exc:
+            logger.warning("retry_failed_drafts failed", extra={"error": str(exc)})
+            return f"Error: {exc}"
+
     # ── Drafts (Gate 2) ─────────────────────────────────────────────────────
 
     @tool
@@ -980,7 +1013,7 @@ Write the full post now. Return only the post text, nothing else."""
         # Pipeline triggers
         trigger_research, trigger_scoring,
         # Ideas (Gate 1)
-        get_ideas, approve_idea, reject_idea, bulk_reject_ideas, send_ideas_to_creation,
+        get_ideas, approve_idea, reject_idea, bulk_reject_ideas, send_ideas_to_creation, retry_failed_drafts,
         # Drafts (Gate 2)
         get_drafts, approve_draft, reject_draft,
         # Brand & subscribers
