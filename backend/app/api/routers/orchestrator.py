@@ -57,24 +57,26 @@ async def _get_or_build_agent(request: Request, supabase: Client, settings: Sett
     if cached is not None and cached_fp == fingerprint:
         return cached
 
+    async def _build():
+        async with _agent_build_lock:
+            if (request.app.state.orchestrator_agent is None
+                    or getattr(request.app.state, "orchestrator_fingerprint", None) != fingerprint):
+                from app.agents.orchestrator.agent import build_orchestrator_agent
+                arq_pool = getattr(request.app.state, "arq_pool", None)
+                request.app.state.orchestrator_agent = build_orchestrator_agent(
+                    supabase=supabase,
+                    arq_pool=arq_pool,
+                    anthropic_api_key=settings.anthropic_api_key,
+                    model=settings.orchestrator_model,
+                    tavily_api_key=settings.tavily_api_key,
+                )
+                request.app.state.orchestrator_fingerprint = fingerprint
+                logger.info("orchestrator agent (re)built", extra={"has_tavily": bool(settings.tavily_api_key)})
+
     try:
-        async with asyncio.timeout(30):
-            async with _agent_build_lock:
-                # Re-check inside the lock
-                if (request.app.state.orchestrator_agent is None
-                        or getattr(request.app.state, "orchestrator_fingerprint", None) != fingerprint):
-                    from app.agents.orchestrator.agent import build_orchestrator_agent
-                    arq_pool = getattr(request.app.state, "arq_pool", None)
-                    request.app.state.orchestrator_agent = build_orchestrator_agent(
-                        supabase=supabase,
-                        arq_pool=arq_pool,
-                        anthropic_api_key=settings.anthropic_api_key,
-                        model=settings.orchestrator_model,
-                        tavily_api_key=settings.tavily_api_key,
-                    )
-                    request.app.state.orchestrator_fingerprint = fingerprint
-                    logger.info("orchestrator agent (re)built", extra={"has_tavily": bool(settings.tavily_api_key)})
-    except TimeoutError:
+        # asyncio.wait_for is compatible with Python 3.10+ (asyncio.timeout needs 3.11)
+        await asyncio.wait_for(_build(), timeout=30)
+    except asyncio.TimeoutError:
         raise HTTPException(status_code=503, detail="Orchestrator initialisation timed out. Try again.")
     return request.app.state.orchestrator_agent
 
