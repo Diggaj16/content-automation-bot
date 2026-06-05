@@ -1,0 +1,53 @@
+# Generated from working venv — pinned versions for reproducible Docker builds.
+# Run `pip freeze` after adding new packages and update this file.
+
+# ── API server ─────────────────────────────────────────────────────────────
+fastapi==0.136.3
+uvicorn[standard]==0.48.0
+starlette==1.2.0
+python-multipart==0.0.30
+python-dotenv==1.2.2
+
+# ── Database / Supabase ────────────────────────────────────────────────────
+supabase==2.30.0
+supabase-auth==2.30.0
+supabase-functions==2.30.0
+storage3==2.30.0
+postgrest==2.30.0
+realtime==2.30.0
+pydantic==2.13.4
+pydantic[email]==2.13.4
+pydantic-settings==2.14.1
+email-validator==2.3.0
+
+# ── Task queue ─────────────────────────────────────────────────────────────
+arq==0.28.0
+redis==5.3.1
+hiredis==3.3.1
+
+# ── LLM / Orchestrator ────────────────────────────────────────────────────
+anthropic==0.105.2
+langchain-anthropic==1.4.4
+langchain-core==1.4.0
+langgraph==1.2.2
+langgraph-checkpoint==4.1.1
+langgraph-prebuilt==1.1.0
+langgraph-sdk==0.3.15
+langsmith==0.8.6
+
+# ── Embeddings ─────────────────────────────────────────────────────────────
+google-genai==2.7.0
+fastembed==0.8.0
+
+# ── Browser automation ─────────────────────────────────────────────────────
+playwright==1.60.0
+
+# ── HTTP / parsing ─────────────────────────────────────────────────────────
+httpx==0.28.1
+beautifulsoup4==4.14.3
+lxml==5.4.0
+pdfplumber==0.11.9
+
+# ── Web search ─────────────────────────────────────────────────────────────
+tavily-python==0.7.25
+duckduckgo-search>=6.0.0

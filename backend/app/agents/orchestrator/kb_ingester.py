@@ -1,7 +1,7 @@
 """
 Knowledge base file ingestion: extract → chunk → embed → upsert.
 
-Supports PDF (PyPDF2) and TXT (UTF-8) files.
+Supports PDF (pdfplumber) and TXT (UTF-8) files.
 Embedding is optional; pass embed_client=None to skip (chunks stored without vectors).
 """
 from __future__ import annotations
@@ -9,7 +9,7 @@ from __future__ import annotations
 import io
 from typing import Optional
 
-import PyPDF2
+import pdfplumber
 from supabase import Client
 
 from app.utils.logging import get_logger
@@ -28,18 +28,18 @@ def extract_text(filename: str, content_bytes: bytes) -> str:
         return content_bytes.decode("utf-8", errors="replace").strip()
     elif name_lower.endswith(".pdf"):
         try:
-            reader = PyPDF2.PdfReader(io.BytesIO(content_bytes))
-        except PyPDF2.errors.PdfReadError as exc:
+            pages = []
+            with pdfplumber.open(io.BytesIO(content_bytes)) as pdf:
+                for page in pdf.pages:
+                    text = page.extract_text()
+                    if text:
+                        pages.append(text.strip())
+            return "\n\n".join(pages)
+        except Exception as exc:
             raise ValueError(
                 f"Cannot read PDF '{filename}': {exc}. "
                 "The file may be encrypted, password-protected, or corrupted."
             ) from exc
-        pages = []
-        for page in reader.pages:
-            text = page.extract_text()
-            if text:
-                pages.append(text.strip())
-        return "\n\n".join(pages)
     else:
         ext = filename.rsplit(".", 1)[-1] if "." in filename else filename
         raise ValueError(f"Unsupported file type: {ext}. Upload PDF or TXT.")

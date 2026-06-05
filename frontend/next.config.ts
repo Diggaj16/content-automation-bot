@@ -1,6 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Required for Docker — generates .next/standalone for the container runner
+  output: "standalone",
   allowedDevOrigins: ["127.0.0.1", "localhost"],
 
   experimental: {

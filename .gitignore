@@ -42,3 +42,9 @@ Thumbs.db
 # Worker logs
 *.log
 worker.log*
+
+# Internal docs and learning material
+docs/
+learning_pdfs/
+generate_pdfs.py
+generate_deep_pdfs.py
