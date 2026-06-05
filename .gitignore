@@ -35,3 +35,10 @@ Thumbs.db
 # IDE — keep shared project settings, ignore personal files
 .vscode/*.code-workspace
 .idea/
+
+# Claude session files
+.claude/
+
+# Worker logs
+*.log
+worker.log*

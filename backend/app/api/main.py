@@ -52,9 +52,11 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    import os as _os
+    _cors_origins = _os.environ.get("CORS_ORIGINS", "http://localhost:3000").split(",")
     _app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],    # tighten in production
+        allow_origins=[o.strip() for o in _cors_origins],
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -82,6 +84,12 @@ def create_app() -> FastAPI:
 
     from app.api.routers.orchestrator import router as orchestrator_router
     _app.include_router(orchestrator_router, dependencies=_auth)
+
+    # Health check — used by Docker Compose and load balancers.
+    # No auth required so the healthcheck curl call works without an API key.
+    @_app.get("/health", include_in_schema=False)
+    async def health():
+        return {"status": "ok"}
 
     return _app
 

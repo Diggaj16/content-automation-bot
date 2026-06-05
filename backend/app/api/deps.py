@@ -9,7 +9,8 @@ from typing import Optional
 
 from app.config import Settings, get_settings as _get_settings
 from app.db.client import get_supabase_client
-
+import hmac
+import secrets
 
 def get_settings() -> Settings:
     return _get_settings()
@@ -35,5 +36,5 @@ def verify_api_key(
     """
     if settings.api_key is None:
         return  # no key configured — dev mode, allow all
-    if x_api_key != settings.api_key:
+    if not hmac.compare_digest(x_api_key or "", settings.api_key or ""):
         raise HTTPException(status_code=403, detail="Invalid or missing API key")

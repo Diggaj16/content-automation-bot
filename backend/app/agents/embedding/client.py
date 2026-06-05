@@ -48,7 +48,7 @@ class EmbedClient(ABC):
 
 class GeminiEmbedder(EmbedClient):
     """
-    Google text-embedding-004 (768 dims by default).
+    Google text-embedding-004 (768 dims by default) via the google-genai SDK.
     Free tier: 1500 requests/day. Paid: $0.025/1M tokens.
     Supports batches up to 100 texts per request.
     """
@@ -56,9 +56,8 @@ class GeminiEmbedder(EmbedClient):
     _CHUNK_SIZE = 100  # Gemini batch limit
 
     def __init__(self, api_key: str, dimensions: int = EMBEDDING_DIMENSIONS) -> None:
-        import google.generativeai as genai
-        genai.configure(api_key=api_key)
-        self._genai = genai
+        from google import genai  # google-genai package (not deprecated google-generativeai)
+        self._client = genai.Client(api_key=api_key)
         self._dimensions = dimensions
 
     def embed(self, texts: list[str], *, for_query: bool = False) -> list[list[float]]:
@@ -69,17 +68,16 @@ class GeminiEmbedder(EmbedClient):
         for i in range(0, len(texts), self._CHUNK_SIZE):
             chunk = texts[i : i + self._CHUNK_SIZE]
             try:
-                result = self._genai.embed_content(
+                result = self._client.models.embed_content(
                     model="models/text-embedding-004",
-                    content=chunk,
-                    task_type=task_type,
-                    output_dimensionality=self._dimensions,
+                    contents=chunk,
+                    config={
+                        "task_type": task_type,
+                        "output_dimensionality": self._dimensions,
+                    },
                 )
-                embeddings = result.get("embedding", [])
-                # Single-text calls return a flat list, not a list-of-lists
-                if embeddings and isinstance(embeddings[0], float):
-                    embeddings = [embeddings]
-                all_embeddings.extend(embeddings)
+                # result.embeddings is a list of ContentEmbedding; each has .values
+                all_embeddings.extend([e.values for e in result.embeddings])
             except Exception as exc:
                 logger.warning(
                     "GeminiEmbedder.embed chunk failed",
@@ -125,7 +123,13 @@ class LocalEmbedder(EmbedClient):
 
 
 class FallbackEmbedder(EmbedClient):
-    """Tries primary; on any failure falls back to secondary."""
+    """
+    Tries primary; falls back to secondary on any failure.
+
+    Partial failures (e.g. Gemini succeeds for chunk 1 but fails for chunk 2,
+    returning a mix of valid and empty vectors) are treated as full failures —
+    the entire batch is retried against the fallback so no empty vectors slip through.
+    """
 
     def __init__(self, primary: EmbedClient, fallback: EmbedClient) -> None:
         self._primary = primary
@@ -134,9 +138,11 @@ class FallbackEmbedder(EmbedClient):
     def embed(self, texts: list[str], *, for_query: bool = False) -> list[list[float]]:
         try:
             results = self._primary.embed(texts, for_query=for_query)
-            # If primary returned all-empty vectors, treat as failure
-            if results and all(len(v) == 0 for v in results):
-                raise ValueError("primary returned empty vectors")
+            # Fail over if ANY vector is empty — partial failures are treated as full failures
+            # so callers never receive a silently mixed valid/empty result.
+            empty_count = sum(1 for v in results if not v)
+            if empty_count:
+                raise ValueError(f"primary returned {empty_count}/{len(results)} empty vector(s)")
             return results
         except Exception as exc:
             logger.warning(

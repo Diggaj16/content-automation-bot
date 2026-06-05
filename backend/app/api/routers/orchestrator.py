@@ -39,26 +39,43 @@ class OrchestratorResponse(BaseModel):
     thread_id: str
 
 
-async def _get_or_build_agent(request: Request, supabase: Client, settings: Settings):
-    """Return cached orchestrator agent, building it on first call.
+def _settings_fingerprint(settings: Settings) -> str:
+    """Hash of the settings fields the agent depends on — rebuild if these change."""
+    return f"{settings.anthropic_api_key}|{settings.tavily_api_key}|{settings.orchestrator_model}"
 
-    The asyncio.Lock ensures concurrent cold-start requests don't race to build
-    the agent twice — only the first caller builds, subsequent callers reuse.
+
+async def _get_or_build_agent(request: Request, supabase: Client, settings: Settings):
+    """Return cached orchestrator agent, building (or rebuilding) as needed.
+
+    Rebuilds automatically when API keys or the model change so a server
+    restart is not required after updating .env.
     """
-    if request.app.state.orchestrator_agent is not None:
-        return request.app.state.orchestrator_agent
-    async with _agent_build_lock:
-        # Re-check inside the lock: another coroutine may have built it while we waited.
-        if request.app.state.orchestrator_agent is None:
-            from app.agents.orchestrator.agent import build_orchestrator_agent
-            arq_pool = getattr(request.app.state, "arq_pool", None)
-            request.app.state.orchestrator_agent = build_orchestrator_agent(
-                supabase=supabase,
-                arq_pool=arq_pool,
-                anthropic_api_key=settings.anthropic_api_key,
-                model=settings.orchestrator_model,
-                tavily_api_key=settings.tavily_api_key,
-            )
+    fingerprint = _settings_fingerprint(settings)
+    cached = request.app.state.orchestrator_agent
+    cached_fp = getattr(request.app.state, "orchestrator_fingerprint", None)
+
+    if cached is not None and cached_fp == fingerprint:
+        return cached
+
+    try:
+        async with asyncio.timeout(30):
+            async with _agent_build_lock:
+                # Re-check inside the lock
+                if (request.app.state.orchestrator_agent is None
+                        or getattr(request.app.state, "orchestrator_fingerprint", None) != fingerprint):
+                    from app.agents.orchestrator.agent import build_orchestrator_agent
+                    arq_pool = getattr(request.app.state, "arq_pool", None)
+                    request.app.state.orchestrator_agent = build_orchestrator_agent(
+                        supabase=supabase,
+                        arq_pool=arq_pool,
+                        anthropic_api_key=settings.anthropic_api_key,
+                        model=settings.orchestrator_model,
+                        tavily_api_key=settings.tavily_api_key,
+                    )
+                    request.app.state.orchestrator_fingerprint = fingerprint
+                    logger.info("orchestrator agent (re)built", extra={"has_tavily": bool(settings.tavily_api_key)})
+    except TimeoutError:
+        raise HTTPException(status_code=503, detail="Orchestrator initialisation timed out. Try again.")
     return request.app.state.orchestrator_agent
 
 

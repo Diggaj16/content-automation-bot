@@ -1,27 +1,43 @@
 """
 Headline pre-scorer: rates a batch of article titles using Claude Haiku.
 
-One API call per site scrape — all headlines from one section page are batched
-into a single message. This is the cheapest possible LLM gate before the
-expensive full-article fetch step.
+Large batches are automatically split into chunks of _CHUNK_SIZE so no single
+API call receives more titles than the model can reliably score in one response.
+Results are merged back into a single PreScoreResult in original order.
+
+Rate-limit (429) and empty-response errors are retried with exponential backoff
+up to _MAX_RETRIES times before giving up and setting failed=True.
 
 Usage:
-    from anthropic import Anthropic
-    client = Anthropic(api_key=settings.anthropic_api_key)
-    result = pre_score_headlines(titles, client, model=settings.claude_model_light)
+    from anthropic import AsyncAnthropic
+    client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+    result = await async_pre_score_headlines(titles, client, model=settings.claude_model_light)
     # result.scores[i] is the relevance score for titles[i]
-    # result.input_tokens / result.output_tokens go into cost tracking
+    # result.failed is True when all retries exhausted; callers bypass threshold filter
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import re
+import time
 from dataclasses import dataclass, field
 
-from anthropic import Anthropic, AsyncAnthropic
+from anthropic import APIConnectionError, Anthropic, AsyncAnthropic, RateLimitError
 
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+# Max headlines per API call — keeps output tokens well under budget.
+_CHUNK_SIZE = 40
+
+# Token budget per chunk: 40 scores × ~8 tokens each + brackets + preamble buffer.
+_MAX_TOKENS = 1024
+
+# Retry config for transient failures (rate limits, empty responses).
+_MAX_RETRIES = 3
+_BASE_BACKOFF = 15  # seconds; doubles each retry: 15 → 30 → 60
 
 _SYSTEM_PROMPT = (
     "You score news headlines for an Indian personal finance content creator. "
@@ -44,6 +60,42 @@ class PreScoreResult:
     scores: list[float] = field(default_factory=list)
     input_tokens: int = 0
     output_tokens: int = 0
+    failed: bool = False  # True when all retries exhausted; callers should bypass threshold filter
+
+
+def _parse_scores(raw: str, expected: int) -> list[float]:
+    """
+    Parse the model's JSON array response and validate the count.
+
+    Tolerates junk around the JSON array (preamble prose, trailing explanation,
+    markdown code fences, newlines inside the array) by falling back to a regex
+    extraction when json.loads fails on the full response text.
+    """
+    if not raw:
+        raise ValueError("Empty response from model")
+    try:
+        scores_raw = json.loads(raw)
+    except json.JSONDecodeError:
+        # Model wrapped the array in prose or added trailing text — extract it.
+        # re.DOTALL so \s matches newlines inside multi-line arrays.
+        match = re.search(r"\[[\d\s.,+-]+\]", raw, re.DOTALL)
+        if not match:
+            raise ValueError(f"No JSON array found in response: {raw!r}")
+        scores_raw = json.loads(match.group())
+
+    if not isinstance(scores_raw, list) or len(scores_raw) != expected:
+        raise ValueError(
+            f"Expected JSON list of {expected} scores, got: {raw!r}"
+        )
+    return [float(s) for s in scores_raw]
+
+
+def _retry_after(exc: RateLimitError) -> float:
+    """Extract the Retry-After seconds from a RateLimitError response header."""
+    try:
+        return float(exc.response.headers.get("retry-after", _BASE_BACKOFF))
+    except Exception:
+        return float(_BASE_BACKOFF)
 
 
 def pre_score_headlines(
@@ -52,49 +104,70 @@ def pre_score_headlines(
     model: str,
 ) -> PreScoreResult:
     """
-    Score a batch of article headlines using a Claude model.
+    Score a batch of article headlines using a Claude model (sync version).
 
-    Returns a PreScoreResult with one float per title (same order).
-    On any failure (API error, malformed JSON, wrong count) returns 5.0 for
-    every title and zero token counts — neutral scores so no articles are lost
-    due to a transient LLM issue.
-
+    Large batches are split into chunks of _CHUNK_SIZE and merged.
+    Rate-limit and empty-response errors are retried with backoff.
+    On permanent failure sets failed=True — callers should bypass the threshold filter.
     Empty input returns an empty PreScoreResult without making an API call.
     """
     if not titles:
         return PreScoreResult()
 
-    headlines_text = "\n".join(f"{i + 1}. {title}" for i, title in enumerate(titles))
+    all_scores: list[float] = []
+    total_in = total_out = 0
 
-    try:
-        # max_tokens: ~6 chars per score entry; 512 covers up to ~300 headlines safely
-        message = client.messages.create(
-            model=model,
-            max_tokens=512,
-            system=_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": headlines_text}],
-        )
-        raw = message.content[0].text.strip()
-        scores_raw = json.loads(raw)
+    for chunk_start in range(0, len(titles), _CHUNK_SIZE):
+        chunk = titles[chunk_start: chunk_start + _CHUNK_SIZE]
+        headlines_text = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(chunk))
+        last_exc: Exception | None = None
 
-        if not isinstance(scores_raw, list) or len(scores_raw) != len(titles):
-            raise ValueError(
-                f"Expected JSON list of {len(titles)} scores, got: {raw!r}"
+        for attempt in range(_MAX_RETRIES):
+            try:
+                message = client.messages.create(
+                    model=model,
+                    max_tokens=_MAX_TOKENS,
+                    system=_SYSTEM_PROMPT,
+                    messages=[{"role": "user", "content": headlines_text}],
+                )
+                raw = message.content[0].text.strip()
+                chunk_scores = _parse_scores(raw, len(chunk))
+                all_scores.extend(chunk_scores)
+                total_in += message.usage.input_tokens
+                total_out += message.usage.output_tokens
+                last_exc = None
+                break  # success
+
+            except RateLimitError as exc:
+                last_exc = exc
+                wait = _retry_after(exc) * (2 ** attempt)
+                logger.warning(
+                    f"pre_score_headlines rate-limited (attempt {attempt + 1}/{_MAX_RETRIES}), "
+                    f"waiting {wait:.0f}s — chunk {chunk_start}–{chunk_start + len(chunk) - 1}, model={model}",
+                )
+                time.sleep(wait)
+
+            except (ValueError, json.JSONDecodeError, APIConnectionError) as exc:
+                last_exc = exc
+                wait = _BASE_BACKOFF * (2 ** attempt)
+                logger.warning(
+                    f"pre_score_headlines bad response (attempt {attempt + 1}/{_MAX_RETRIES}): {exc} — "
+                    f"waiting {wait:.0f}s before retry, chunk {chunk_start}–{chunk_start + len(chunk) - 1}",
+                )
+                time.sleep(wait)
+
+            except Exception as exc:
+                last_exc = exc
+                break  # non-transient — don't retry
+
+        if last_exc is not None:
+            logger.warning(
+                f"pre_score_headlines failed permanently ({type(last_exc).__name__}: {last_exc}) — "
+                f"chunk {chunk_start}–{chunk_start + len(chunk) - 1} of {len(titles)} titles, model={model}",
             )
+            return PreScoreResult(scores=[0.0] * len(titles), failed=True)
 
-        scores = [float(s) for s in scores_raw]
-        return PreScoreResult(
-            scores=scores,
-            input_tokens=message.usage.input_tokens,
-            output_tokens=message.usage.output_tokens,
-        )
-
-    except Exception as exc:
-        logger.warning(
-            "pre_score_headlines failed — defaulting all to 0.0 (site will be skipped)",
-            extra={"error": str(exc), "title_count": len(titles), "model": model},
-        )
-        return PreScoreResult(scores=[0.0] * len(titles))
+    return PreScoreResult(scores=all_scores, input_tokens=total_in, output_tokens=total_out)
 
 
 async def async_pre_score_headlines(
@@ -103,39 +176,80 @@ async def async_pre_score_headlines(
     model: str,
 ) -> PreScoreResult:
     """
-    Async version of pre_score_headlines using AsyncAnthropic.
-    Identical logic — does not block the event loop.
+    Score a batch of article headlines using a Claude model (async version).
+
+    Large batches are split into chunks of _CHUNK_SIZE and merged.
+    Rate-limit and empty-response errors are retried with backoff.
+    On permanent failure sets failed=True — callers should bypass the threshold filter.
+    Empty input returns an empty PreScoreResult without making an API call.
     """
     if not titles:
         return PreScoreResult()
 
-    headlines_text = "\n".join(f"{i + 1}. {title}" for i, title in enumerate(titles))
+    all_scores: list[float] = []
+    total_in = total_out = 0
 
-    try:
-        message = await client.messages.create(
-            model=model,
-            max_tokens=512,
-            system=_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": headlines_text}],
-        )
-        raw = message.content[0].text.strip()
-        scores_raw = json.loads(raw)
+    for chunk_start in range(0, len(titles), _CHUNK_SIZE):
+        chunk = titles[chunk_start: chunk_start + _CHUNK_SIZE]
 
-        if not isinstance(scores_raw, list) or len(scores_raw) != len(titles):
-            raise ValueError(
-                f"Expected JSON list of {len(titles)} scores, got: {raw!r}"
+        # Filter blank titles — Claude returns explanation instead of scores when the
+        # message body is empty (e.g. a title that is whitespace-only).
+        # Keep index mapping so we can reinsert 0.0 for skipped slots.
+        valid_indices = [i for i, t in enumerate(chunk) if t.strip()]
+        if not valid_indices:
+            all_scores.extend([0.0] * len(chunk))
+            continue
+        valid_titles = [chunk[i] for i in valid_indices]
+        headlines_text = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(valid_titles))
+        last_exc: Exception | None = None
+
+        for attempt in range(_MAX_RETRIES):
+            try:
+                message = await client.messages.create(
+                    model=model,
+                    max_tokens=_MAX_TOKENS,
+                    system=_SYSTEM_PROMPT,
+                    messages=[{"role": "user", "content": headlines_text}],
+                )
+                raw = message.content[0].text.strip()
+                chunk_scores_valid = _parse_scores(raw, len(valid_titles))
+                # Reinsert 0.0 for blank-title slots
+                chunk_scores = [0.0] * len(chunk)
+                for idx, score in zip(valid_indices, chunk_scores_valid):
+                    chunk_scores[idx] = score
+                all_scores.extend(chunk_scores)
+                total_in += message.usage.input_tokens
+                total_out += message.usage.output_tokens
+                last_exc = None
+                break  # success
+
+            except RateLimitError as exc:
+                last_exc = exc
+                wait = _retry_after(exc) * (2 ** attempt)
+                logger.warning(
+                    f"async_pre_score_headlines rate-limited (attempt {attempt + 1}/{_MAX_RETRIES}), "
+                    f"waiting {wait:.0f}s — chunk {chunk_start}–{chunk_start + len(chunk) - 1}, model={model}",
+                )
+                await asyncio.sleep(wait)
+
+            except (ValueError, json.JSONDecodeError, APIConnectionError) as exc:
+                last_exc = exc
+                wait = _BASE_BACKOFF * (2 ** attempt)
+                logger.warning(
+                    f"async_pre_score_headlines transient error (attempt {attempt + 1}/{_MAX_RETRIES}): {exc} — "
+                    f"waiting {wait:.0f}s before retry, chunk {chunk_start}–{chunk_start + len(chunk) - 1}",
+                )
+                await asyncio.sleep(wait)
+
+            except Exception as exc:
+                last_exc = exc
+                break  # non-transient — don't retry
+
+        if last_exc is not None:
+            logger.warning(
+                f"async_pre_score_headlines failed permanently ({type(last_exc).__name__}: {last_exc}) — "
+                f"chunk {chunk_start}–{chunk_start + len(chunk) - 1} of {len(titles)} titles, model={model}",
             )
+            return PreScoreResult(scores=[0.0] * len(titles), failed=True)
 
-        scores = [float(s) for s in scores_raw]
-        return PreScoreResult(
-            scores=scores,
-            input_tokens=message.usage.input_tokens,
-            output_tokens=message.usage.output_tokens,
-        )
-
-    except Exception as exc:
-        logger.warning(
-            "async_pre_score_headlines failed — defaulting all to 0.0 (site will be skipped)",
-            extra={"error": str(exc), "title_count": len(titles), "model": model},
-        )
-        return PreScoreResult(scores=[0.0] * len(titles))
+    return PreScoreResult(scores=all_scores, input_tokens=total_in, output_tokens=total_out)

@@ -1,0 +1,103 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Growthvine Capital — Content Automation Stack
+#
+# Services:
+#   redis    — arq job queue
+#   api      — FastAPI server (uvicorn)
+#   worker   — arq worker (same image, different entrypoint)
+#   frontend — Next.js admin panel
+#
+# Usage:
+#   docker compose up --build          # build + start all
+#   docker compose up --build -d       # detached
+#   docker compose logs -f worker      # tail worker logs
+#   docker compose down -v             # stop + remove volumes
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Redis ─────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── FastAPI backend ────────────────────────────────────────────────────────
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - CORS_ORIGINS=http://localhost:3000,http://frontend:3000
+      # PLAYWRIGHT_BROWSER_CHANNEL is intentionally unset — Docker uses bundled Chromium.
+      # login_site_task (headless=False) won't work in Docker — run that on local machine.
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - browser_sessions:/root/.config/contentautomation/browser_sessions
+    # Chromium needs shared memory even in the API container (login_site_task)
+    shm_size: "512m"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # ── arq worker ─────────────────────────────────────────────────────────────
+  # Same image as api — just a different entrypoint.
+  # Runs research, scoring, creation, publishing, analytics tasks.
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["python", "-m", "arq", "app.queue.worker.WorkerSettings"]
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - browser_sessions:/root/.config/contentautomation/browser_sessions
+    # Playwright/Chromium needs at least 1 GB shared memory for stable page rendering.
+    shm_size: "1gb"
+
+  # ── Next.js frontend ───────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - ./frontend/.env.local
+    environment:
+      - BACKEND_URL=http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  redis_data:
+  browser_sessions:

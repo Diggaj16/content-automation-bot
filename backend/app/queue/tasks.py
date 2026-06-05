@@ -67,8 +67,9 @@ async def research_agent_task(
     """
     import time
     from playwright.async_api import async_playwright
-    from app.agents.research.extractor import BROWSER_ARGS, fetch_article, normalize_url
+    from app.agents.research.extractor import BROWSER_ARGS, BROWSER_CHANNEL, fetch_article, normalize_url
     from app.agents.research.scraper import scrape_homepage
+    from app.agents.research.reddit_scraper import scrape_reddit
     from app.agents.research.filters import is_url_seen, is_article_fresh, is_article_long_enough
     from app.agents.research.prescorer import async_pre_score_headlines
     from app.agents.research.summariser import async_summarise_article
@@ -89,7 +90,7 @@ async def research_agent_task(
     # Each fetch creates a new context (isolated cookies/storage) then closes it.
     _pw = await async_playwright().start()   # .start() is the correct non-context-manager API
     _browser = await _pw.chromium.launch(
-        channel="msedge", headless=True, args=BROWSER_ARGS
+        channel=BROWSER_CHANNEL, headless=True, args=BROWSER_ARGS
     )
 
     # Semaphore limits concurrent page opens to avoid memory pressure.
@@ -133,8 +134,16 @@ async def research_agent_task(
         nonlocal processed_count, success_count, failure_count, skipped_count
         nonlocal haiku_in, haiku_out, sonnet_in, sonnet_out
         try:
-            # Step 1 — Scrape section page (reuses shared browser)
-            links = await scrape_homepage(site.section_url, site.site_name, browser=_browser)
+            # Step 1 — Scrape section page.
+            # Reddit subreddits use the JSON API (no browser needed).
+            # Everything else uses the Playwright browser scraper.
+            if "reddit.com/r/" in site.section_url:
+                import re as _re
+                _sub = _re.search(r"reddit\.com/r/([^/?#]+)", site.section_url)
+                sub_name = _sub.group(1) if _sub else "IndiaInvestments"
+                links = await scrape_reddit(sub_name, site.site_name)
+            else:
+                links = await scrape_homepage(site.section_url, site.site_name, browser=_browser)
             if not links:
                 await asyncio.to_thread(
                     record_site_failure, supabase, site.id,
@@ -228,29 +237,40 @@ async def research_agent_task(
             else:
                 to_fetch = []
 
-            # Step 3b — Fetch articles in parallel
-            # _GLOBAL_FETCH_SEM caps total browser instances across all parallel sites
+            # Step 3b — Fetch articles in parallel.
+            # Reddit text posts already contain their content — no browser fetch needed.
+            # Link posts (Reddit or regular) go through fetch_article as normal.
+            from app.agents.research.extractor import ArticleContent as _AC
             _site_sem = asyncio.Semaphore(_ARTICLE_CONCURRENCY)
 
-            async def _fetch(link_url: str):
-                async with _global_fetch_sem:   # global cap first (created in running event loop)
-                    async with _site_sem:        # then per-site cap
+            async def _fetch(link):
+                # Reddit text post — content is already in the post body
+                if hasattr(link, "selftext") and link.selftext:
+                    return _AC(
+                        url=link.url,
+                        normalized_url=normalize_url(link.url),
+                        title=link.title,
+                        full_text=link.selftext,
+                        word_count=len(link.selftext.split()),
+                        paywall_detected=False,
+                        publication_date=None,
+                    )
+                # Regular article or Reddit link post — fetch from the URL
+                async with _global_fetch_sem:
+                    async with _site_sem:
                         try:
-                            # Fresh browser per article — shared browser causes
-                            # Livemint/BS to throttle sequential requests from the
-                            # same fingerprint. Standalone fetches take ~4s each.
                             return await asyncio.wait_for(
-                                fetch_article(link_url),
+                                fetch_article(link.url),
                                 timeout=_ARTICLE_FETCH_TIMEOUT,
                             )
                         except asyncio.TimeoutError:
                             logger.warning(
-                                f"research: article fetch hard-timeout ({_ARTICLE_FETCH_TIMEOUT}s) | url={link_url}"
+                                f"research: article fetch hard-timeout ({_ARTICLE_FETCH_TIMEOUT}s) | url={link.url}"
                             )
-                            raise  # propagates as an exception result in return_exceptions=True gather
+                            raise
 
             fetch_results = await asyncio.gather(
-                *[_fetch(link.url) for link, _, _ in to_fetch],
+                *[_fetch(link) for link, _, _ in to_fetch],
                 return_exceptions=True,
             )
 
@@ -879,7 +899,7 @@ async def login_site_task(ctx: dict, *, login_url: str) -> dict:
             # Persistent context saves cookies/localStorage automatically when closed
             context = await p.chromium.launch_persistent_context(
                 str(profile_dir),
-                channel="msedge",
+                channel=BROWSER_CHANNEL,
                 headless=False,           # user must see and interact
                 args=["--no-proxy-server", "--disable-ipv6"],
             )

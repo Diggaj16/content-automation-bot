@@ -41,7 +41,7 @@ _SYSTEM_PROMPT = (
     "  },\n"
     "  ...\n"
     "]\n\n"
-    "Generate 2-4 ideas spread across platforms. Respond with nothing but the JSON array."
+    "Generate exactly 2 ideas, each on a different platform. Respond with nothing but the JSON array."
 )
 
 
@@ -61,6 +61,7 @@ def generate_ideas(
     article: RawContent,
     client: Anthropic,
     model: str,
+    rejection_summary: str = "",
 ) -> IdeaGenerationResult:
     """
     Generate a list of IdeaCreate objects from a scored article.
@@ -75,6 +76,10 @@ def generate_ideas(
     key_points_str = "\n".join(f"- {pt}" for pt in s.key_data_points)
     angles_str = "\n".join(f"- {a}" for a in s.content_angles)
 
+    rejection_block = (
+        f"\n\nREJECTION PATTERNS TO AVOID:\n{rejection_summary}"
+        if rejection_summary else ""
+    )
     user_content = (
         f"Title: {article.title}\n\n"
         f"Story narrative:\n{s.story_narrative}\n\n"
@@ -82,6 +87,7 @@ def generate_ideas(
         f"Mechanism:\n{s.mechanism}\n\n"
         f"Implications:\n{s.implications}\n\n"
         f"Suggested content angles:\n{angles_str}"
+        f"{rejection_block}"
     )
 
     try:

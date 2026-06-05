@@ -8,7 +8,7 @@ from typing import Optional
 from uuid import UUID
 
 from anthropic import Anthropic
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from supabase import Client
 
 from app.api.deps import get_supabase, get_settings
@@ -66,9 +66,10 @@ def list_ideas(
 
 
 @router.patch("/{idea_id}")
-def approve_idea(
+async def approve_idea(
     idea_id: UUID,
     payload: IdeaApproval,
+    background_tasks: BackgroundTasks, 
     supabase: Client = Depends(get_supabase),
     settings: Settings = Depends(get_settings),
 ) -> dict:
@@ -93,7 +94,7 @@ def approve_idea(
         raise HTTPException(status_code=500, detail="Internal server error")
 
     if payload.approval_status == ApprovalStatus.REJECTED:
-        _maybe_generate_summary(supabase, settings)
+        background_tasks.add_task(_maybe_generate_summary,supabase, settings)
 
     return resp.data[0]
 

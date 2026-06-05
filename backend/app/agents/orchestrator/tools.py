@@ -887,26 +887,37 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
                 f"Please try a more specific query or provide source text directly."
             )
 
-        # Step 2 — Get brand voice examples
+        # Step 2 — Get brand voice via embedding similarity (not just recency)
         brand_examples = ""
         try:
-            resp = (
-                supabase.table("brand_memory")
-                .select("content")
-                .eq("platform", platform)
-                .order("created_at", desc=True)
-                .limit(3)
-                .execute()
-            )
-            examples = [r["content"] for r in (resp.data or [])]
-            if examples:
-                brand_examples = "Brand voice examples (match this style):\n\n" + "\n\n---\n\n".join(examples)
+            from app.config import get_settings as _gs
+            from app.agents.embedding.client import make_embed_client as _mec
+            _s = _gs()
+            _ec = _mec(google_api_key=_s.google_api_key, local_model=_s.local_embedding_model)
+            topic_vec = _ec.embed_one(topic)
+            if topic_vec:
+                bm_resp = supabase.rpc(
+                    "match_brand_memory",
+                    {"query_embedding": topic_vec, "match_count": 3, "filter_platform": platform},
+                ).execute()
+                examples = [r["content"] for r in (bm_resp.data or [])]
+            else:
+                raise ValueError("empty embedding")
         except Exception:
-            pass
+            # fallback: most recent 3
+            try:
+                fb = supabase.table("brand_memory").select("content").eq("platform", platform).order("created_at", desc=True).limit(3).execute()
+                examples = [r["content"] for r in (fb.data or [])]
+            except Exception:
+                examples = []
+        if examples:
+            brand_examples = "Brand voice examples (match this style):\n\n" + "\n\n---\n\n".join(examples)
 
-        # Step 3 — Generate with Claude
+        # Step 3 — Generate with Claude Sonnet for quality
         try:
             from anthropic import Anthropic
+            from app.config import get_settings as _gs2
+            _model = _gs2().claude_model_heavy
             client = Anthropic(api_key=anthropic_api_key)
             system = f"""You write educational Indian finance content for {platform}.
 Write in the exact style and tone of the brand voice examples provided.
@@ -923,7 +934,7 @@ Source material (use facts from this, don't fabricate numbers):
 Write the full post now. Return only the post text, nothing else."""
 
             message = client.messages.create(
-                model="claude-haiku-4-5",
+                model=_model,
                 max_tokens=1024,
                 system=system,
                 messages=[{"role": "user", "content": user_prompt}],

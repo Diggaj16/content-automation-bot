@@ -70,7 +70,7 @@ class WorkerSettings:
     # Tests should not import this module directly; use mocks at the task level.
     redis_settings = _get_redis_settings()
     max_jobs    = 10
-    job_timeout = 1200  # seconds — 20 min max per job (research across 7 sites)
+    job_timeout = 2400  # seconds — 40 min max per job (research across 7 sites + prescore retries)
 
     cron_jobs = [
         # 6:00 AM IST = 00:30 UTC
