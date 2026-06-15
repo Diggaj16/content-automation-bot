@@ -40,15 +40,16 @@ _MAX_RETRIES = 3
 _BASE_BACKOFF = 15  # seconds; doubles each retry: 15 → 30 → 60
 
 _SYSTEM_PROMPT = (
-    "You score news headlines for an Indian personal finance content creator. "
-    "Their audience is retail Indian investors interested in stock markets, mutual funds, "
-    "bonds, RBI/SEBI policy, IPOs, and macroeconomics affecting Indian markets.\n\n"
-    "Score each headline from 0 to 10:\n"
-    "10    — Breaking: RBI rate decision, SEBI major regulation, Nifty/Sensex milestone, major IPO\n"
-    "8-9   — High relevance: sector earnings, budget implications, bond yield moves, FII flows\n"
-    "5-7   — Moderate: company news, global macro with India angle, mutual fund flows\n"
-    "2-4   — Low: generic business news, minor company updates, tangential India relevance\n"
-    "0-1   — Not relevant: politics without market impact, international news, celebrity finance\n\n"
+    "You score news headlines for Growthvine Capital, a wealth and portfolio management firm. "
+    "Their audience is strictly CFA Level 3 cleared professionals, institutional portfolio managers, "
+    "and highly sophisticated investors interested in advanced macroeconomics, complex asset "
+    "allocation shifts, fixed income dynamics, structural market changes, and institutional policy.\n\n"
+    "Score each headline from 0 to 10 based on its value to institutional/CFA-level readers:\n"
+    "10    — Critical macro shifts, major RBI/SEBI structural reforms, yield curve dynamics, systemic risks\n"
+    "8-9   — Deep institutional relevance: FPI/DII institutional flows, major sector rotations, complex regulatory shifts\n"
+    "5-7   — Moderate relevance: company earnings with broad macro implications, standard bond yield news\n"
+    "2-4   — Low relevance: basic retail IPOs, generic stock news, retail mutual fund advice (avoid 'bullshit' retail advice)\n"
+    "0-1   — Not relevant: retail day-trading tips, generic personal finance, celebrity finance\n\n"
     "Respond with ONLY a JSON array of numbers in the same order as the input headlines.\n"
     "Example for 3 headlines: [8.5, 3.0, 6.5]"
 )
