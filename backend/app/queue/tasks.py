@@ -413,11 +413,11 @@ async def research_agent_task(
         f"duration={duration:.1f}s cost=${total_usd:.4f}"
     )
 
-    # Auto-chain to scoring agent
+    # Auto-chain to scoring agent (target the scoring queue)
     arq_pool = ctx.get("redis")
     if arq_pool is not None:
         try:
-            await arq_pool.enqueue_job("scoring_agent_task")
+            await arq_pool.enqueue_job("scoring_agent_task", _queue="arq:scoring")
             logger.info("research_agent_task: chained to scoring_agent_task")
         except Exception as exc:
             logger.warning(f"research_agent_task: failed to chain scoring | err={exc}")
@@ -901,6 +901,7 @@ async def login_site_task(ctx: dict, *, login_url: str) -> dict:
     from pathlib import Path
     from urllib.parse import urlparse
     from playwright.async_api import async_playwright
+    from app.agents.research.extractor import BROWSER_CHANNEL
 
     settings = ctx["settings"]
     import re as _re
@@ -1016,6 +1017,7 @@ async def publishing_agent_task(ctx: dict) -> dict:
                         post_id=post_id,
                         measurement_period=period,
                         _defer_by=timedelta(hours=hours),
+                        _queue="arq:analytics",
                     )
 
             published_count += 1

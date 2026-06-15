@@ -149,7 +149,7 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
         """Trigger the research agent to discover and scrape new articles.
         Optionally pass a topic hint (e.g. 'SEBI announcement') to guide research."""
         try:
-            job = await arq_pool.enqueue_job("research_agent_task", topic=topic)
+            job = await arq_pool.enqueue_job("research_agent_task", topic=topic, _queue="arq:research")
             job_id = job.job_id if job else "unknown"
             return f"Research agent enqueued (job_id={job_id}). Topic hint: {topic or 'none'}."
         except Exception as exc:
@@ -160,7 +160,7 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
     async def trigger_scoring() -> str:
         """Trigger the scoring agent to generate content ideas from unprocessed articles."""
         try:
-            job = await arq_pool.enqueue_job("scoring_agent_task")
+            job = await arq_pool.enqueue_job("scoring_agent_task", _queue="arq:scoring")
             job_id = job.job_id if job else "unknown"
             return f"Scoring agent enqueued (job_id={job_id})."
         except Exception as exc:
@@ -211,6 +211,7 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
                 "creation_agent_task",
                 idea_ids=idea_ids,
                 content_type=content_type,
+                _queue="arq:creation",
             )
             job_id = job.job_id if job else "unknown"
             return (
@@ -495,6 +496,7 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
                 "creation_agent_task",
                 idea_ids=idea_ids,
                 content_type=content_type,
+                _queue="arq:creation",
             )
             job_id = job.job_id if job else "unknown"
             return (
@@ -528,6 +530,7 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
                 "creation_agent_task",
                 idea_ids=failed_ids,
                 content_type=content_type,
+                _queue="arq:creation",
             )
             job_id = job.job_id if job else "unknown"
             return (

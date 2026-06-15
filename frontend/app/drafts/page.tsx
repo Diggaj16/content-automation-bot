@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { getDrafts, approveDraft, type Draft } from "../lib/api";
+import type { DraftsResponse } from "../lib/api";
 
 // ─── shared ───────────────────────────────────────────────────────────────────
 
@@ -176,6 +177,66 @@ function ReadOnlyDraftRow({ draft }: { draft: Draft }) {
   );
 }
 
+// ─── pagination component ─────────────────────────────────────────────────────
+
+function PaginationBar({
+  currentPage,
+  totalPages,
+  onPageChange,
+}: {
+  currentPage: number;
+  totalPages: number;
+  onPageChange: (page: number) => void;
+}) {
+  if (totalPages <= 1) return null;
+
+  // Build a smart page list: show first, last, current pages with gaps
+  const pages: (number | "ellipsis")[] = [];
+  for (let i = 1; i <= totalPages; i++) {
+    if (i === 1 || i === totalPages || (i >= currentPage - 1 && i <= currentPage + 1)) {
+      pages.push(i);
+    } else if (pages[pages.length - 1] !== "ellipsis") {
+      pages.push("ellipsis");
+    }
+  }
+
+  return (
+    <div className="flex items-center justify-center gap-1 pt-4">
+      <button
+        onClick={() => onPageChange(currentPage - 1)}
+        disabled={currentPage <= 1}
+        className="px-3 py-1.5 text-sm border border-gray-300 rounded text-gray-700 hover:bg-gray-50 disabled:opacity-30 disabled:cursor-not-allowed"
+      >
+        ◀ Prev
+      </button>
+      {pages.map((p, i) =>
+        p === "ellipsis" ? (
+          <span key={`e-${i}`} className="px-2 text-gray-400 text-sm">…</span>
+        ) : (
+          <button
+            key={p}
+            onClick={() => onPageChange(p)}
+            className={`px-3 py-1.5 text-sm border rounded ${
+              p === currentPage
+                ? "bg-blue-600 text-white border-blue-600"
+                : "border-gray-300 text-gray-700 hover:bg-gray-50"
+            }`}
+          >
+            {p}
+          </button>
+        )
+      )}
+      <button
+        onClick={() => onPageChange(currentPage + 1)}
+        disabled={currentPage >= totalPages}
+        className="px-3 py-1.5 text-sm border border-gray-300 rounded text-gray-700 hover:bg-gray-50 disabled:opacity-30 disabled:cursor-not-allowed"
+      >
+        Next ▶
+      </button>
+    </div>
+  );
+}
+
 // ─── types ────────────────────────────────────────────────────────────────────
 
 type StatusTab = "pending_approval" | "approved" | "rejected";
@@ -193,6 +254,8 @@ const TAB_LABELS: Record<StatusTab, string> = {
   rejected:         "Rejected",
 };
 
+const PAGE_SIZE = 50;
+
 // ─── main page ────────────────────────────────────────────────────────────────
 
 export default function DraftsPage() {
@@ -206,6 +269,11 @@ export default function DraftsPage() {
   const [sortBy, setSortBy] = useState<SortOption>("date_desc");
   const [platformFilter, setPlatformFilter] = useState<string>("");
 
+  // ── pagination state ──────────────────────────────────────────────────────
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalItems, setTotalItems] = useState(0);
+
   // ── toast ──────────────────────────────────────────────────────────────────
   const showToast = useCallback((msg: string) => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -218,12 +286,16 @@ export default function DraftsPage() {
   }, []);
 
   // ── fetch ──────────────────────────────────────────────────────────────────
-  const fetchDrafts = useCallback(async () => {
+  const fetchDrafts = useCallback(async (page: number = 1) => {
     setLoading(true);
     setError(null);
     setPlatformFilter("");
     try {
-      setDrafts(await getDrafts(tab));
+      const resp: DraftsResponse = await getDrafts(tab, page, PAGE_SIZE);
+      setDrafts(resp.data);
+      setTotalPages(resp.total_pages);
+      setTotalItems(resp.total);
+      setCurrentPage(resp.page);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to load drafts");
     } finally {
@@ -231,7 +303,17 @@ export default function DraftsPage() {
     }
   }, [tab]);
 
-  useEffect(() => { fetchDrafts(); }, [fetchDrafts]);
+  // Re-fetch when tab changes, resetting to page 1
+  useEffect(() => {
+    setCurrentPage(1);
+    fetchDrafts(1);
+  }, [fetchDrafts]);
+
+  // ── page change handler ────────────────────────────────────────────────────
+  const handlePageChange = useCallback((page: number) => {
+    setCurrentPage(page);
+    fetchDrafts(page);
+  }, [fetchDrafts]);
 
   // ── derived state ──────────────────────────────────────────────────────────
   const platforms = useMemo(
@@ -266,13 +348,15 @@ export default function DraftsPage() {
           <p className="text-sm text-gray-500 mt-0.5">
             {loading
               ? "Loading…"
-              : `${drafts.length} draft${drafts.length !== 1 ? "s" : ""}${
+              : `${totalItems} draft${totalItems !== 1 ? "s" : ""}${
+                  totalPages > 1 ? ` · Page ${currentPage} of ${totalPages}` : ""
+                }${
                   platformFilter ? ` · ${displayedDrafts.length} shown` : ""
                 }`}
           </p>
         </div>
         <button
-          onClick={fetchDrafts}
+          onClick={() => fetchDrafts(currentPage)}
           disabled={loading}
           className="px-3 py-1.5 text-sm border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 disabled:opacity-50"
         >
@@ -351,6 +435,15 @@ export default function DraftsPage() {
               <ReadOnlyDraftRow key={draft.id} draft={draft} />
             ))}
       </div>
+
+      {/* Pagination */}
+      {!loading && totalPages > 1 && (
+        <PaginationBar
+          currentPage={currentPage}
+          totalPages={totalPages}
+          onPageChange={handlePageChange}
+        />
+      )}
     </div>
   );
 }

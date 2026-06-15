@@ -28,8 +28,16 @@ export async function approveIdea(
   });
 }
 
-export async function getDrafts(status = "pending_approval") {
-  return apiFetch<Draft[]>(`/drafts?status=${status}&limit=50`);
+export interface DraftsResponse {
+  data: Draft[];
+  total: number;
+  page: number;
+  limit: number;
+  total_pages: number;
+}
+
+export async function getDrafts(status = "pending_approval", page = 1, limit = 50) {
+  return apiFetch<DraftsResponse>(`/drafts?status=${status}&limit=${limit}&page=${page}`);
 }
 
 export async function approveDraft(

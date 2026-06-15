@@ -1,7 +1,14 @@
 """
-arq WorkerSettings.
+arq WorkerSettings — original combined worker (backward compatible).
 
-Start the worker from the backend/ directory with venv active:
+Dedicated workers for each agent type are in:
+  - research_worker.py
+  - scoring_worker.py
+  - creation_worker.py
+  - publishing_worker.py
+  - analytics_worker.py
+
+Start the combined worker from the backend/ directory with venv active:
     python -m arq app.queue.worker.WorkerSettings
 
 Prerequisites:
@@ -9,8 +16,8 @@ Prerequisites:
     - .env file present in backend/ with REDIS_URL set
 """
 from arq import cron
-from arq.connections import RedisSettings
 
+from app.queue.redis_settings import get_redis_settings
 from app.queue.tasks import (
     analytics_agent_task,
     creation_agent_task,
@@ -40,21 +47,6 @@ async def shutdown(ctx: dict) -> None:
     pass
 
 
-def _get_redis_settings() -> RedisSettings:
-    """Parse REDIS_URL from settings into arq RedisSettings."""
-    from app.config import get_settings
-    url = get_settings().redis_url   # e.g. "redis://localhost:6379"
-    host, port = "localhost", 6379
-    if "://" in url:
-        netloc = url.split("://", 1)[1].split("/")[0]
-        if ":" in netloc:
-            host, port_str = netloc.rsplit(":", 1)
-            port = int(port_str)
-        else:
-            host = netloc
-    return RedisSettings(host=host, port=port)
-
-
 class WorkerSettings:
     functions = [
         research_agent_task,
@@ -66,9 +58,7 @@ class WorkerSettings:
     ]
     on_startup  = startup
     on_shutdown = shutdown
-    # arq reads redis_settings as a class attribute — evaluated at import time.
-    # Tests should not import this module directly; use mocks at the task level.
-    redis_settings = _get_redis_settings()
+    redis_settings = get_redis_settings()
     max_jobs    = 10
     job_timeout = 2400  # seconds — 40 min max per job (research across 7 sites + prescore retries)
 
