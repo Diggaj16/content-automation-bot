@@ -11,6 +11,7 @@ from uuid import UUID
 
 from supabase import Client
 
+from app.db.client import table_has_column
 from app.db.models import IdeaCreate
 from app.utils.logging import get_logger
 
@@ -45,6 +46,9 @@ def write_ideas(
             "score":                idea.score,
             "recent_coverage_flag": idea.recent_coverage_flag,
         }
+        # target_persona only exists after migration 005 — include it when present.
+        if table_has_column("ideas", "target_persona"):
+            payload["target_persona"] = idea.target_persona
         try:
             resp = supabase.table("ideas").insert(payload).execute()
             if resp.data:

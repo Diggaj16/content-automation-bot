@@ -7,10 +7,13 @@ Start from backend/ with venv active:
 """
 from app.queue.redis_settings import get_redis_settings
 from app.queue.tasks import creation_agent_task
+from app.queue.worker import shutdown, startup
 
 
 class CreationWorkerSettings:
     functions = [creation_agent_task]
+    on_startup  = startup
+    on_shutdown = shutdown
     redis_settings = get_redis_settings()
     queue_name = "arq:creation"
     max_jobs = 3

@@ -18,6 +18,56 @@ router = APIRouter(prefix="/drafts", tags=["Gate 2 — Drafts"])
 
 logger = get_logger(__name__)
 
+_ARTICLE_COLUMNS = (
+    "id, url, title, source_name, publication_date, full_text, "
+    "structured_summary, word_count, pre_score, vision_fallback_used, paywall_detected"
+)
+
+
+def _attach_source_articles(supabase: Client, drafts: list[dict]) -> None:
+    """
+    Populate each draft's `source_article` by following draft.source_idea_id ->
+    ideas.source_article_id -> raw_content. Mutates drafts in place; never raises.
+    Drafts with no resolvable article get source_article=None.
+    """
+    for d in drafts:
+        d["source_article"] = None
+    try:
+        idea_ids = list({d["source_idea_id"] for d in drafts if d.get("source_idea_id")})
+        if not idea_ids:
+            return
+
+        # idea_id -> source_article_id
+        ideas_resp = (
+            supabase.table("ideas")
+            .select("id, source_article_id")
+            .in_("id", idea_ids)
+            .execute()
+        )
+        article_id_by_idea = {
+            r["id"]: r["source_article_id"]
+            for r in (ideas_resp.data or [])
+            if r.get("source_article_id")
+        }
+        if not article_id_by_idea:
+            return
+
+        article_ids = list(set(article_id_by_idea.values()))
+        art_resp = (
+            supabase.table("raw_content")
+            .select(_ARTICLE_COLUMNS)
+            .in_("id", article_ids)
+            .execute()
+        )
+        articles_by_id = {a["id"]: a for a in (art_resp.data or [])}
+
+        for d in drafts:
+            article_id = article_id_by_idea.get(d.get("source_idea_id"))
+            if article_id:
+                d["source_article"] = articles_by_id.get(article_id)
+    except Exception as exc:
+        logger.warning("_attach_source_articles failed", extra={"error": str(exc)})
+
 
 @router.get("")
 def list_drafts(
@@ -67,10 +117,14 @@ def list_drafts(
             .range(offset, offset + limit - 1)
             .execute()
         )
+        drafts = resp.data or []
+
+        # Attach the scraped source article via draft -> idea -> raw_content (two-hop join)
+        _attach_source_articles(supabase, drafts)
 
         import math
         return {
-            "data": resp.data or [],
+            "data": drafts,
             "total": total,
             "page": page,
             "limit": limit,

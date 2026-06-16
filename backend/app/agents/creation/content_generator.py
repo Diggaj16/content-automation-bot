@@ -16,25 +16,35 @@ from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-_MAX_OUTPUT_TOKENS = 2048
+_MAX_OUTPUT_TOKENS = 4096
 _MAX_CONTEXT_CHARS = 4000  # per-source context cap to avoid token overflow
 
 _SYSTEM_PROMPT = (
-    "You write content for the founder of Growthvine Capital, an elite wealth management and "
-    "portfolio management firm in Gurgaon. The audience consists almost entirely of CFA Level 3 "
-    "cleared professionals, institutional portfolio managers, and seasoned wealth advisors.\n\n"
-    "Voice and style:\n"
-    "- Highly analytical, descriptive, and institutional-grade. NO generic retail advice or 'bullshit'.\n"
-    "- Use advanced financial terminology correctly (e.g., duration, convexity, Sharpe/Sortino ratios, VaR, portfolio attribution, yield curve dynamics).\n"
-    "- Explore the deep fundamental, quantitative, and macroeconomic drivers (the WHY and HOW).\n"
-    "- Use specific data points, percentages, basis points, and dates from the source material.\n"
-    "- Present sophisticated perspectives (e.g., impact on equity risk premiums, strategic vs tactical asset allocation, structural vs cyclical factors).\n"
-    "- Think in second-order and third-order effects — what does this mean downstream for institutional portfolios?\n"
-    "- Historical context: connect to past cycles, crises, or precedents when relevant with quantitative backing.\n"
-    "- Tone is strictly professional, highly intelligent, and direct — never sensationalist or clickbait.\n"
-    "- NEVER give buy/sell recommendations or guaranteed-return claims.\n"
-    "- ALWAYS end with a disclaimer: 'This content is for informational and educational "
-    "purposes only and should not be considered as financial, investment, tax, or legal advice.'"
+    "You write social content for Growthvine Capital, an Indian wealth-management and advisory firm. "
+    "Your readers are financially-aware Indians — HNIs, professionals, founders, advisors, and serious "
+    "retail investors. They are smart and curious but not necessarily finance specialists, so you "
+    "explain the mechanism, not just the headline.\n\n"
+    "VOICE — match the past brand examples provided in the prompt; they are the ground truth:\n"
+    "- Clear, confident, and direct. Authoritative but accessible — never hype, clickbait, or sensational.\n"
+    "- Data-driven: ground every claim in a specific number, percentage, ₹/$ figure, date, or named "
+    "company/institution from the source material. No vague statements.\n"
+    "- Mechanism-focused: explain the WHY and HOW step by step — break a complex event into how it "
+    "actually works.\n"
+    "- Educational: when you use a term a non-specialist might not know (free float, FAR, CAD, short "
+    "squeeze), define it briefly in-line (e.g. 'For context, an IPO is...').\n"
+    "- Myth-busting / contrarian where the data supports it ('Most people assume X. Here's what actually happened.').\n"
+    "- Storytelling when the topic suits it: open on a scene and build tension before you explain "
+    "(e.g. 'November 2021. India's biggest IPO opened...').\n"
+    "- Rhythm: mix short, punchy lines with fuller explanatory paragraphs.\n"
+    "- Indian-finance lens: RBI, SEBI, Nifty, the rupee, IPOs, bonds, EPF, FDI, and the like.\n\n"
+    "ALWAYS:\n"
+    "- Use bold Unicode section headers (𝗟𝗶𝗸𝗲 𝘁𝗵𝗶𝘀) to structure the piece.\n"
+    "- End with a branded takeaway section — e.g. '𝗧𝗵𝗲 𝗕𝗼𝘁𝘁𝗼𝗺 𝗟𝗶𝗻𝗲' or "
+    "'💡 The Growthvine Capital Perspective' — and, where natural, one engagement question.\n\n"
+    "NEVER:\n"
+    "- Give buy/sell recommendations, price targets, or guaranteed-return claims.\n"
+    "- Use generic filler ('In today's world', 'In conclusion', 'Let's dive in').\n"
+    "- Add a formal legal disclaimer inside the post — the brand's own posts don't carry one."
 )
 
 _PLATFORM_GUIDES: dict[str, str] = {
@@ -66,20 +76,24 @@ _PLATFORM_GUIDES: dict[str, str] = {
         "Tone must be authoritative, calming, and analytical."
     ),
     "linkedin": (
-        "Write a long-form LinkedIn post (1,800–2,500 characters).\n\n"
+        "Write a long-form LinkedIn post in the Growthvine house style (roughly 250–650 words). "
+        "Mirror the structure and voice of the past brand examples provided above.\n\n"
         "Structure:\n"
-        "- Bold question or statement as the title (use Unicode bold: 𝗟𝗶𝗸𝗲 𝘁𝗵𝗶𝘀)\n"
-        "- Opening paragraph: set the scene with a specific data point or recent event\n"
-        "- 2-3 analytical paragraphs: explain the why, the mechanism, the historical context\n"
-        "- A section with bullet points (use •) for different investor perspectives or key takeaways\n"
-        "- 'A second-order effect worth watching:' paragraph — downstream consequences\n"
-        "- Closing question that invites genuine reflection\n"
-        "- Disclaimer in italic (use Unicode italic: 𝘓𝘪𝘬𝘦 𝘵𝘩𝘪𝘴)\n\n"
+        "- HOOK: open with a bold Unicode header (𝗟𝗶𝗸𝗲 𝘁𝗵𝗶𝘀). Either a topic label "
+        "(e.g. 𝗥𝗕𝗜 𝗠𝗣𝗖 𝗨𝗽𝗱𝗮𝘁𝗲) or a provocative/contrarian one-liner "
+        "(e.g. 𝗧𝗵𝗲 𝗺𝗮𝗿𝗸𝗲𝘁 𝘀𝗲𝘁 𝗮 𝗿𝗲𝗰𝗼𝗿𝗱 — 𝘁𝗵𝗲 𝗱𝗮𝘁𝗮 𝘀𝗮𝘆𝘀 𝗼𝘁𝗵𝗲𝗿𝘄𝗶𝘀𝗲).\n"
+        "- OPENING: set the scene in 2–4 lines with a specific stat or a short narrative beat.\n"
+        "- CONTEXT ASIDE (only when a term needs it): one or two lines defining the key concept for non-specialists.\n"
+        "- BODY: 3–6 short sections, each introduced by its OWN bold Unicode subheader, each explaining "
+        "one facet of the story with concrete numbers. Use • or ▸ bullets for lists of measures, reasons, or takeaways.\n"
+        "- TAKEAWAY: a closing section under a bold header like '𝗧𝗵𝗲 𝗕𝗼𝘁𝘁𝗼𝗺 𝗟𝗶𝗻𝗲' or "
+        "'💡 The Growthvine Capital Perspective' that ties it together in 2–4 lines.\n"
+        "- Optionally a single engagement question on the final line.\n\n"
         "Rules:\n"
-        "- Minimum one specific statistic or data point per paragraph\n"
-        "- No emojis except sparingly (max 2 total)\n"
-        "- No generic phrases like 'In today's world' or 'In conclusion'\n"
-        "- Professional but direct — write for senior finance professionals"
+        "- Every section must contain at least one specific number, date, or named entity from the source.\n"
+        "- Bold Unicode for ALL section headers; normal text for the body.\n"
+        "- Emoji only as a takeaway marker (💡/▸) — at most 1–2 in the whole post.\n"
+        "- No formal disclaimer line. No generic filler ('In today's world', 'In conclusion')."
     ),
     "twitter": (
         "Write a Twitter/X thread (6-8 tweets, each strictly under 280 characters).\n\n"
@@ -106,11 +120,11 @@ _PLATFORM_GUIDES: dict[str, str] = {
         "  - Multiple investor perspectives\n"
         "  - Second-order effects\n"
         "  - What to watch next\n"
-        "- Conclusion: nuanced takeaway with an open question\n"
-        "- Disclaimer paragraph\n\n"
+        "- Conclusion: a branded takeaway ('The Bottom Line' / 'The Growthvine Capital Perspective') with an open question\n\n"
         "Rules:\n"
+        "- Use bold Unicode for section headers, matching the brand examples\n"
         "- Every section must cite at least one specific number from the source material\n"
-        "- Target: senior professionals and serious retail investors, not beginners"
+        "- Explain any specialist term briefly in-line; no formal disclaimer line"
     ),
     "email": (
         "Write an email newsletter section (350–500 words).\n\n"
@@ -120,11 +134,10 @@ _PLATFORM_GUIDES: dict[str, str] = {
         "- Opening: one sharp observation grounded in a real number\n"
         "- Body (3 paragraphs): what happened → why it matters → what to watch\n"
         "- 'Worth thinking about:' — one second-order consequence\n"
-        "- Closing question for the reader\n"
-        "- Disclaimer (one line, italic)\n\n"
+        "- Closing question for the reader\n\n"
         "Rules:\n"
         "- Conversational but intelligent — like a sharp colleague's weekly note\n"
-        "- No investment advice or guaranteed-return claims"
+        "- No investment advice, guaranteed-return claims, or formal disclaimer line"
     ),
 }
 
@@ -194,7 +207,7 @@ def generate_content(
     if brand_context:
         context_section += f"\n\n{brand_context}"
 
-    target_persona = idea.target_persona or "CFA Level 3 Professional"
+    target_persona = idea.target_persona or "an informed Indian investor"
 
     user_prompt = (
         f"Content angle: {angle}\n"
@@ -235,16 +248,25 @@ def generate_content(
             except json.JSONDecodeError:
                 pass
 
-        # Fallback: if JSON parse failed or returned empty, use the raw response directly.
-        # This handles cases where Claude follows the format guide so literally it
-        # forgets to wrap in JSON — the raw text IS the post.
-        if not content_text and raw and len(raw.split()) > 20:
-            logger.info(
-                "generate_content: no JSON found, using raw response as content_text",
-                extra={"platform": platform, "words": len(raw.split())},
-            )
-            content_text = raw
-            reasoning = f"Generated for {platform}"
+        # Fallback: if JSON parse failed or returned empty, try to extract just
+        # content_text value from malformed JSON before giving up.
+        if not content_text and raw:
+            ct_match = re.search(r'"content_text"\s*:\s*"(.*?)(?<!\\)"\s*[,}]', raw, re.DOTALL)
+            if ct_match:
+                content_text = ct_match.group(1).replace('\\"', '"').replace("\\n", "\n").strip()
+                reasoning = f"Generated for {platform}"
+                logger.info(
+                    "generate_content: extracted content_text from malformed JSON",
+                    extra={"platform": platform},
+                )
+            elif len(raw.split()) > 20 and not raw.lstrip().startswith("{"):
+                # Raw response IS the post (Claude skipped JSON wrapping entirely)
+                content_text = raw
+                reasoning = f"Generated for {platform}"
+                logger.info(
+                    "generate_content: using raw response as content_text (no JSON wrapper)",
+                    extra={"platform": platform, "words": len(raw.split())},
+                )
 
         if not content_text:
             logger.warning("generate_content: empty response", extra={"platform": platform})
@@ -311,7 +333,7 @@ async def async_generate_content(
     if brand_context:
         context_section += f"\n\n{brand_context}"
 
-    target_persona = idea.target_persona or "CFA Level 3 Professional"
+    target_persona = idea.target_persona or "an informed Indian investor"
 
     user_prompt = (
         f"Content angle: {angle}\n"
@@ -351,13 +373,22 @@ async def async_generate_content(
             except json.JSONDecodeError:
                 pass
 
-        if not content_text and raw and len(raw.split()) > 20:
-            logger.info(
-                "async_generate_content: no JSON found, using raw response as content_text",
-                extra={"platform": platform, "words": len(raw.split())},
-            )
-            content_text = raw
-            reasoning = f"Generated for {platform}"
+        if not content_text and raw:
+            ct_match = re.search(r'"content_text"\s*:\s*"(.*?)(?<!\\)"\s*[,}]', raw, re.DOTALL)
+            if ct_match:
+                content_text = ct_match.group(1).replace('\\"', '"').replace("\\n", "\n").strip()
+                reasoning = f"Generated for {platform}"
+                logger.info(
+                    "async_generate_content: extracted content_text from malformed JSON",
+                    extra={"platform": platform},
+                )
+            elif len(raw.split()) > 20 and not raw.lstrip().startswith("{"):
+                content_text = raw
+                reasoning = f"Generated for {platform}"
+                logger.info(
+                    "async_generate_content: using raw response as content_text (no JSON wrapper)",
+                    extra={"platform": platform, "words": len(raw.split())},
+                )
 
         if not content_text:
             logger.warning("async_generate_content: empty response", extra={"platform": platform})

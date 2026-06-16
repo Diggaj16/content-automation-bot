@@ -181,6 +181,7 @@ export interface Draft {
   approval_status: string;
   scheduled_at: string | null;
   source_idea_id: string | null;
+  source_article: SourceArticle | null;
   created_at: string;
 }
 

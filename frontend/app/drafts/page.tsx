@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { getDrafts, approveDraft, type Draft } from "../lib/api";
 import type { DraftsResponse } from "../lib/api";
+import SourceArticlePanel from "../components/SourceArticlePanel";
 
 // ─── shared ───────────────────────────────────────────────────────────────────
 
@@ -38,6 +39,7 @@ function getTomorrowAt9AM(): string {
 function DraftCard({ draft, onAction }: { draft: Draft; onAction: (id: string) => void }) {
   const [expanded, setExpanded] = useState(false);
   const [approving, setApproving] = useState(false);
+  const [showArticle, setShowArticle] = useState(false);
   const [contentText, setContentText] = useState(draft.content_text);
   const [scheduledAt, setScheduledAt] = useState(getTomorrowAt9AM());
   const [busy, setBusy] = useState(false);
@@ -94,14 +96,9 @@ function DraftCard({ draft, onAction }: { draft: Draft; onAction: (id: string) =
             </span>
           )}
           {draft.finance_flags && draft.finance_flags.length > 0 && (
-            <div className="flex gap-1 flex-wrap">
-              {draft.finance_flags.map((flag, i) => (
-                <span key={i} title={flag.context}
-                  className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800 border border-yellow-200">
-                  ⚠ {flag.flag_type}
-                </span>
-              ))}
-            </div>
+            <span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800 border border-yellow-200">
+              ⚠ {draft.finance_flags.length} flag{draft.finance_flags.length !== 1 ? "s" : ""}
+            </span>
           )}
         </div>
         <span className="text-xs text-gray-400 whitespace-nowrap">
@@ -110,7 +107,9 @@ function DraftCard({ draft, onAction }: { draft: Draft; onAction: (id: string) =
       </div>
 
       <div className="text-sm text-gray-800 leading-relaxed">
-        <p>{expanded ? draft.content_text : preview}{!expanded && hasMore && "…"}</p>
+        <p className="whitespace-pre-wrap leading-relaxed">
+          {expanded ? draft.content_text : preview}{!expanded && hasMore && "…"}
+        </p>
         {hasMore && (
           <button onClick={() => setExpanded((v) => !v)} className="text-xs text-blue-600 hover:underline mt-1">
             {expanded ? "Show less" : "Show more"}
@@ -123,6 +122,38 @@ function DraftCard({ draft, onAction }: { draft: Draft; onAction: (id: string) =
           <summary className="cursor-pointer text-blue-600 hover:underline">Agent reasoning</summary>
           <p className="mt-1 text-gray-600 bg-gray-50 rounded p-2 leading-relaxed">{draft.agent_reasoning}</p>
         </details>
+      )}
+
+      {draft.finance_flags && draft.finance_flags.length > 0 && (
+        <details className="text-xs">
+          <summary className="cursor-pointer text-amber-700 hover:underline">
+            ⚠ {draft.finance_flags.length} compliance flag{draft.finance_flags.length !== 1 ? "s" : ""} — review before publishing
+          </summary>
+          <ul className="mt-1 space-y-1">
+            {draft.finance_flags.map((flag, i) => (
+              <li key={i} className="bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+                <div className="flex items-baseline gap-1.5 flex-wrap">
+                  <span className="px-1.5 py-0.5 rounded text-[10px] uppercase font-semibold bg-amber-200 text-amber-900 whitespace-nowrap">
+                    {flag.flag_type.replace(/_/g, " ")}
+                  </span>
+                  <span className="font-medium text-gray-900 break-words">{flag.content}</span>
+                </div>
+                {flag.context && (
+                  <p className="text-gray-500 mt-1 text-[11px] leading-snug">…{flag.context}…</p>
+                )}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+
+      {draft.source_article && (
+        <div>
+          <button onClick={() => setShowArticle((v) => !v)} className="text-xs text-green-700 hover:underline font-medium">
+            {showArticle ? "Hide scraped article" : "View scraped article"}
+          </button>
+          {showArticle && <div className="mt-2"><SourceArticlePanel article={draft.source_article} /></div>}
+        </div>
       )}
 
       {approving ? (
@@ -171,6 +202,7 @@ function DraftCard({ draft, onAction }: { draft: Draft; onAction: (id: string) =
 
 function ReadOnlyDraftRow({ draft }: { draft: Draft }) {
   const [expanded, setExpanded] = useState(false);
+  const [showArticle, setShowArticle] = useState(false);
   const preview = draft.content_text.slice(0, 160);
   const hasMore = draft.content_text.length > 160;
 
@@ -192,7 +224,7 @@ function ReadOnlyDraftRow({ draft }: { draft: Draft }) {
             Compliance: {draft.compliance_status}
           </span>
         )}
-        <p className="flex-1 text-sm text-gray-800 w-full mt-1">
+        <p className="flex-1 text-sm text-gray-800 w-full mt-1 whitespace-pre-wrap leading-relaxed">
           {expanded ? draft.content_text : preview}{!expanded && hasMore && "…"}
         </p>
         <span className="text-xs text-gray-400 whitespace-nowrap">
@@ -203,6 +235,14 @@ function ReadOnlyDraftRow({ draft }: { draft: Draft }) {
         <button onClick={() => setExpanded((v) => !v)} className="text-xs text-blue-600 hover:underline ml-1">
           {expanded ? "Show less" : "Show more"}
         </button>
+      )}
+      {draft.source_article && (
+        <div className="mt-1">
+          <button onClick={() => setShowArticle((v) => !v)} className="text-xs text-green-700 hover:underline font-medium">
+            {showArticle ? "Hide scraped article" : "View scraped article"}
+          </button>
+          {showArticle && <div className="mt-2"><SourceArticlePanel article={draft.source_article} /></div>}
+        </div>
       )}
     </div>
   );

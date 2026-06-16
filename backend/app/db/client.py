@@ -1,8 +1,26 @@
 from supabase import create_client, Client
 from app.config import get_settings
+from functools import lru_cache
 from typing import Optional
 
 _client: Optional[Client] = None
+
+
+@lru_cache(maxsize=128)
+def table_has_column(table: str, column: str) -> bool:
+    """
+    Return True if `table.column` exists in the live database.
+
+    Used to keep writes compatible with databases where an optional migration
+    (e.g. 005's target_persona / compliance_status) has not been applied yet.
+    Result is cached per (table, column); restart the process to re-probe after
+    applying a migration.
+    """
+    try:
+        get_supabase_client().table(table).select(column).limit(1).execute()
+        return True
+    except Exception:
+        return False
 
 
 def get_supabase_client() -> Client:

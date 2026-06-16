@@ -3,6 +3,7 @@ DB write operations for the creation agent.
 """
 from typing import Optional
 
+from app.db.client import table_has_column
 from app.db.models import DraftCreate
 from app.utils.logging import get_logger
 
@@ -27,6 +28,13 @@ def write_draft(supabase, draft_create: DraftCreate) -> Optional[str]:
                 if draft_create.suggested_publish_time else None
             ),
         }
+        # target_persona / compliance_status only exist after migration 005.
+        # Include them when present so a worker rebuild never crashes on a DB
+        # where 005 hasn't been applied yet.
+        if table_has_column("drafts", "target_persona"):
+            payload["target_persona"] = draft_create.target_persona
+        if table_has_column("drafts", "compliance_status"):
+            payload["compliance_status"] = draft_create.compliance_status
         resp = (
             supabase.table("drafts")
             .insert(payload)

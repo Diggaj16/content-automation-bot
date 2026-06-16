@@ -34,7 +34,7 @@ def check_compliance(draft_text: str, client: Anthropic, model: str) -> Complian
     try:
         response = client.messages.create(
             model=model,
-            max_tokens=2048,
+            max_tokens=4096,
             system=_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": draft_text}],
         )

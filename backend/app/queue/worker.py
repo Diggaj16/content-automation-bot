@@ -31,7 +31,7 @@ from app.queue.tasks import (
 async def startup(ctx: dict) -> None:
     """Initialise shared resources available to all task functions via ctx."""
     import sys
-    # Crawl4AI prints Unicode arrows (→) that break Windows cp1252 console.
+    # Playwright can emit Unicode characters that break the Windows cp1252 console.
     # Reconfigure stdout/stderr to UTF-8 so scraping never crashes on encoding.
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):

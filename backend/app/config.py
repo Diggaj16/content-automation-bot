@@ -17,9 +17,16 @@ class Settings(BaseSettings):
         env_ignore_empty=True,   # empty system env-vars fall through to .env values
     )
 
-    # Supabase
-    supabase_url: str = Field(..., alias="SUPABASE_URL")
-    supabase_service_role_key: str = Field(..., alias="SUPABASE_SERVICE_ROLE_KEY")
+    # Postgres (SQLAlchemy) — self-hosted, replaces Supabase
+    database_url: str = Field(
+        "postgresql+psycopg://postgres:postgres@localhost:5432/contentautomation",
+        alias="DATABASE_URL",
+    )
+
+    # Supabase — legacy, retained during migration (data export + fallback).
+    # Optional so the app boots on Postgres-only deployments.
+    supabase_url: Optional[str] = Field(None, alias="SUPABASE_URL")
+    supabase_service_role_key: Optional[str] = Field(None, alias="SUPABASE_SERVICE_ROLE_KEY")
 
     # Anthropic
     anthropic_api_key: str = Field(..., alias="ANTHROPIC_API_KEY")
