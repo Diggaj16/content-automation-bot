@@ -1012,9 +1012,39 @@ Write the full post now. Return only the post text, nothing else."""
             logger.warning("save_draft failed", extra={"error": str(exc)})
             return f"Error saving draft: {exc}"
 
+    @tool
+    def generate_macro_briefing(days_back: int = 7) -> str:
+        """
+        Synthesizes the last N days of processed articles into a high-level institutional macro briefing.
+        Useful to summarize current market trends before generating complex content.
+        """
+        try:
+            resp = (
+                supabase.table("raw_content")
+                .select("title, structured_summary")
+                .eq("processed", True)
+                .order("created_at", desc=True)
+                .limit(20)
+                .execute()
+            )
+            articles = resp.data or []
+            if not articles:
+                return f"No processed articles found in the last {days_back} days."
+
+            briefing = f"--- Macro Briefing (Last {days_back} days) ---\n"
+            for a in articles:
+                summary = a.get("structured_summary") or {}
+                narrative = summary.get("story_narrative", a.get("title", ""))
+                implications = summary.get("implications", "")
+                briefing += f"\n- {narrative}\n  Impact: {implications}"
+
+            return briefing
+        except Exception as exc:
+            return f"Error generating macro briefing: {str(exc)}"
+
     return [
         # Pipeline triggers
-        trigger_research, trigger_scoring,
+        trigger_research, trigger_scoring, generate_macro_briefing,
         # Ideas (Gate 1)
         get_ideas, approve_idea, reject_idea, bulk_reject_ideas, send_ideas_to_creation, retry_failed_drafts,
         # Drafts (Gate 2)

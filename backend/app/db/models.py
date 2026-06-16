@@ -23,6 +23,9 @@ class Platform(str, Enum):
     TWITTER  = "twitter"
     BLOG     = "blog"
     EMAIL    = "email"
+    WHATSAPP = "whatsapp"
+    CAROUSEL = "carousel"
+    ADVISOR_TALKING_POINTS = "advisor_talking_points"
 
 
 class ApprovalStatus(str, Enum):
@@ -100,6 +103,8 @@ class StructuredSummary(BaseModel):
     mechanism:       str          # underlying cause
     implications:    str          # what this means for the audience
     content_angles:  list[str]    # 2-3 rough angles worth pursuing
+    affected_segments: list[str]  = Field(default_factory=list) # e.g. SIP investors, HNI, FD investors
+    sentiment:       str          = "neutral" # bullish, bearish, neutral, educational
 
 
 class RawContent(BaseModel):
@@ -112,6 +117,7 @@ class RawContent(BaseModel):
     fetch_date:           datetime
     full_text:            str
     structured_summary:   Optional[StructuredSummary]
+    affected_segments:    list[str]
     word_count:           int
     pre_score:            Optional[float]
     vision_fallback_used: bool
@@ -128,6 +134,7 @@ class RawContentCreate(BaseModel):
     publication_date:     Optional[datetime]          = None
     full_text:            str
     structured_summary:   Optional[StructuredSummary] = None
+    affected_segments:    list[str]                   = Field(default_factory=list)
     word_count:           int                         = 0
     pre_score:            Optional[float]             = None
     vision_fallback_used: bool                        = False
@@ -140,6 +147,7 @@ class Idea(BaseModel):
     id:                   UUID
     platform:             Platform
     angle:                str
+    target_persona:       Optional[str]
     edited_angle:         Optional[str]
     source_article_id:    Optional[UUID]
     agent_reasoning:      str
@@ -154,6 +162,7 @@ class Idea(BaseModel):
 class IdeaCreate(BaseModel):
     platform:             Platform
     angle:                str
+    target_persona:       Optional[str]      = None
     source_article_id:    Optional[UUID]     = None
     agent_reasoning:      str
     source_article_date:  Optional[datetime] = None
@@ -194,6 +203,8 @@ class Draft(BaseModel):
     id:                     UUID
     platform:               Platform
     content_text:           str
+    target_persona:         Optional[str]
+    compliance_status:      str
     agent_reasoning:        str
     source_idea_id:         Optional[UUID]
     finance_flags:          list[FinanceFlag]
@@ -207,6 +218,8 @@ class Draft(BaseModel):
 class DraftCreate(BaseModel):
     platform:               Platform
     content_text:           str
+    target_persona:         Optional[str]     = None
+    compliance_status:      str               = "pending"
     agent_reasoning:        str
     source_idea_id:         Optional[UUID]    = None
     finance_flags:          list[FinanceFlag] = Field(default_factory=list)

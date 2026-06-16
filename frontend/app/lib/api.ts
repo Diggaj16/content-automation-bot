@@ -155,6 +155,7 @@ export interface Idea {
   id: string;
   platform: string;
   angle: string;
+  target_persona: string | null;
   edited_angle: string | null;
   agent_reasoning: string | null;
   score: number | null;
@@ -169,6 +170,8 @@ export interface Draft {
   id: string;
   platform: string;
   content_text: string;
+  target_persona: string | null;
+  compliance_status: string | null;
   agent_reasoning: string | null;
   finance_flags: Array<{
     flag_type: string;

@@ -11,6 +11,9 @@ const platformColors: Record<string, string> = {
   twitter:  "bg-sky-100 text-sky-700",
   blog:     "bg-purple-100 text-purple-700",
   email:    "bg-amber-100 text-amber-700",
+  whatsapp: "bg-green-100 text-green-700",
+  carousel: "bg-pink-100 text-pink-700",
+  advisor_talking_points: "bg-slate-100 text-slate-700",
 };
 
 function PlatformBadge({ platform }: { platform: string }) {
@@ -76,6 +79,20 @@ function DraftCard({ draft, onAction }: { draft: Draft; onAction: (id: string) =
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-2 flex-wrap">
           <PlatformBadge platform={draft.platform} />
+          {draft.target_persona && (
+            <span className="px-2 py-0.5 rounded text-[10px] uppercase font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200">
+              {draft.target_persona}
+            </span>
+          )}
+          {draft.compliance_status && (
+            <span className={`px-2 py-0.5 rounded text-[10px] uppercase font-semibold border ${
+              draft.compliance_status === 'approved' ? 'bg-green-50 text-green-700 border-green-200' :
+              draft.compliance_status === 'flagged' ? 'bg-amber-50 text-amber-700 border-amber-200' :
+              'bg-red-50 text-red-700 border-red-200'
+            }`}>
+              Compliance: {draft.compliance_status}
+            </span>
+          )}
           {draft.finance_flags && draft.finance_flags.length > 0 && (
             <div className="flex gap-1 flex-wrap">
               {draft.finance_flags.map((flag, i) => (
@@ -159,9 +176,23 @@ function ReadOnlyDraftRow({ draft }: { draft: Draft }) {
 
   return (
     <div className="bg-white border border-gray-100 rounded-lg px-4 py-3 space-y-1">
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 flex-wrap">
         <PlatformBadge platform={draft.platform} />
-        <p className="flex-1 text-sm text-gray-800">
+        {draft.target_persona && (
+          <span className="px-2 py-0.5 rounded text-[10px] uppercase font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200">
+            {draft.target_persona}
+          </span>
+        )}
+        {draft.compliance_status && (
+          <span className={`px-2 py-0.5 rounded text-[10px] uppercase font-semibold border ${
+            draft.compliance_status === 'approved' ? 'bg-green-50 text-green-700 border-green-200' :
+            draft.compliance_status === 'flagged' ? 'bg-amber-50 text-amber-700 border-amber-200' :
+            'bg-red-50 text-red-700 border-red-200'
+          }`}>
+            Compliance: {draft.compliance_status}
+          </span>
+        )}
+        <p className="flex-1 text-sm text-gray-800 w-full mt-1">
           {expanded ? draft.content_text : preview}{!expanded && hasMore && "…"}
         </p>
         <span className="text-xs text-gray-400 whitespace-nowrap">

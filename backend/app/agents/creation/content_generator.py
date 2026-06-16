@@ -20,23 +20,51 @@ _MAX_OUTPUT_TOKENS = 2048
 _MAX_CONTEXT_CHARS = 4000  # per-source context cap to avoid token overflow
 
 _SYSTEM_PROMPT = (
-    "You write content for the founder of Growthvine Capital, an Indian wealth management firm "
-    "that works with top executives and business families. The founder has deep expertise in "
-    "macroeconomics, financial markets, and long-term investing.\n\n"
+    "You write content for the founder of Growthvine Capital, an elite wealth management and "
+    "portfolio management firm in Gurgaon. The audience consists almost entirely of CFA Level 3 "
+    "cleared professionals, institutional portfolio managers, and seasoned wealth advisors.\n\n"
     "Voice and style:\n"
-    "- Analytical and nuanced — explore WHY something is happening, not just WHAT\n"
-    "- Use specific data points, percentages, and dates from the source material\n"
-    "- Present multiple perspectives (e.g. growth investors vs value investors)\n"
-    "- Think in second-order effects — what does this mean downstream?\n"
-    "- Historical context: connect to past cycles, crises, or precedents when relevant\n"
-    "- End with an open question that invites genuine reflection\n"
-    "- Tone is intelligent and direct — never sensationalist or clickbait\n"
-    "- NEVER give buy/sell recommendations or guaranteed-return claims\n"
+    "- Highly analytical, descriptive, and institutional-grade. NO generic retail advice or 'bullshit'.\n"
+    "- Use advanced financial terminology correctly (e.g., duration, convexity, Sharpe/Sortino ratios, VaR, portfolio attribution, yield curve dynamics).\n"
+    "- Explore the deep fundamental, quantitative, and macroeconomic drivers (the WHY and HOW).\n"
+    "- Use specific data points, percentages, basis points, and dates from the source material.\n"
+    "- Present sophisticated perspectives (e.g., impact on equity risk premiums, strategic vs tactical asset allocation, structural vs cyclical factors).\n"
+    "- Think in second-order and third-order effects — what does this mean downstream for institutional portfolios?\n"
+    "- Historical context: connect to past cycles, crises, or precedents when relevant with quantitative backing.\n"
+    "- Tone is strictly professional, highly intelligent, and direct — never sensationalist or clickbait.\n"
+    "- NEVER give buy/sell recommendations or guaranteed-return claims.\n"
     "- ALWAYS end with a disclaimer: 'This content is for informational and educational "
     "purposes only and should not be considered as financial, investment, tax, or legal advice.'"
 )
 
 _PLATFORM_GUIDES: dict[str, str] = {
+    "whatsapp": (
+        "Write a highly concise WhatsApp broadcast message for institutional clients/advisors (under 150 words).\n\n"
+        "Structure:\n"
+        "- 🚨 Core macro/market update in one strong sentence.\n"
+        "- 📉 Impact on portfolios (use bullets).\n"
+        "- 💡 Actionable institutional perspective or tactical shift.\n"
+        "Tone is urgent, strictly professional, and skimmable."
+    ),
+    "carousel": (
+        "Write copy for a 5-10 slide analytical LinkedIn carousel.\n\n"
+        "Structure each slide explicitly:\n"
+        "[Slide 1: Hook] Data-driven question or statement.\n"
+        "[Slide 2-4: The Mechanism] Break down the quantitative drivers.\n"
+        "[Slide 5-7: Implications] What this means for specific asset classes.\n"
+        "[Slide 8: The Second-Order Effect] A non-obvious outcome.\n"
+        "[Slide 9: Conclusion] Institutional perspective.\n"
+        "Keep text per slide minimal and impactful."
+    ),
+    "advisor_talking_points": (
+        "Write internal talking points for wealth advisors to use in client meetings.\n\n"
+        "Structure:\n"
+        "- **The Event:** 1-sentence summary.\n"
+        "- **The Why:** Bullet points explaining the structural cause.\n"
+        "- **Client Impact:** How this affects specific portfolios.\n"
+        "- **What to say if asked:** Provide 2-3 scripted, highly professional responses to common client fears or questions.\n"
+        "Tone must be authoritative, calming, and analytical."
+    ),
     "linkedin": (
         "Write a long-form LinkedIn post (1,800–2,500 characters).\n\n"
         "Structure:\n"
@@ -166,14 +194,17 @@ def generate_content(
     if brand_context:
         context_section += f"\n\n{brand_context}"
 
+    target_persona = idea.target_persona or "CFA Level 3 Professional"
+
     user_prompt = (
         f"Content angle: {angle}\n"
+        f"Target Persona: {target_persona}\n"
         f"Platform: {platform}\n"
         f"{context_section}\n\n"
         f"Platform writing guide:\n{guide}\n\n"
         "Return ONLY a JSON object with these exact keys:\n"
         '{"content_text": "the complete content ready to post", '
-        '"reasoning": "1-2 sentences explaining why this angle works for this platform"}'
+        '"reasoning": "1-2 sentences explaining why this angle works for this persona on this platform"}'
     )
 
     try:
@@ -222,6 +253,7 @@ def generate_content(
         draft_create = DraftCreate(
             platform=idea.platform,
             content_text=content_text,
+            target_persona=target_persona,
             agent_reasoning=reasoning or f"Generated for {platform}",
             source_idea_id=idea.id,
             finance_flags=[],  # Populated separately by finance_flags module
@@ -279,14 +311,17 @@ async def async_generate_content(
     if brand_context:
         context_section += f"\n\n{brand_context}"
 
+    target_persona = idea.target_persona or "CFA Level 3 Professional"
+
     user_prompt = (
         f"Content angle: {angle}\n"
+        f"Target Persona: {target_persona}\n"
         f"Platform: {platform}\n"
         f"{context_section}\n\n"
         f"Platform writing guide:\n{guide}\n\n"
         "Return ONLY a JSON object with these exact keys:\n"
         '{"content_text": "the complete content ready to post", '
-        '"reasoning": "1-2 sentences explaining why this angle works for this platform"}'
+        '"reasoning": "1-2 sentences explaining why this angle works for this persona on this platform"}'
     )
 
     try:
@@ -331,6 +366,7 @@ async def async_generate_content(
         draft_create = DraftCreate(
             platform=idea.platform,
             content_text=content_text,
+            target_persona=target_persona,
             agent_reasoning=reasoning or f"Generated for {platform}",
             source_idea_id=idea.id,
             finance_flags=[],
