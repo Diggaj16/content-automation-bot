@@ -37,9 +37,11 @@ _SYSTEM_PROMPT = (
     '  "key_data_points": ["<specific macro/micro metric, basis points, yields, or valuation ratios>", ...],\n'
     '  "mechanism": "<1-2 sentences explaining the underlying structural or quantitative cause>",\n'
     '  "implications": "<1-2 sentences on portfolio implications (e.g. asset allocation, risk premiums) for institutional investors>",\n'
-    '  "content_angles": ["<deep analytical angle 1>", "<deep analytical angle 2>"]\n'
+    '  "content_angles": ["<deep analytical angle 1>", "<deep analytical angle 2>"],\n'
+    '  "affected_segments": ["<affected investor segments, e.g. SIP investors, HNI, Debt Fund holders, Corporate treasuries>"],\n'
+    '  "sentiment": "<bullish | bearish | neutral | educational>"\n'
     "}\n\n"
-    "key_data_points and content_angles must be JSON arrays (even if empty). "
+    "key_data_points, content_angles, and affected_segments must be JSON arrays (even if empty). "
     "Respond with nothing but the JSON object."
 )
 
@@ -63,6 +65,8 @@ def _fallback_summary(title: str) -> SummaryResult:
             mechanism="",
             implications="",
             content_angles=[],
+            affected_segments=[],
+            sentiment="neutral",
         ),
         input_tokens=0,
         output_tokens=0,

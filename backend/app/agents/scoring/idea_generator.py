@@ -31,21 +31,24 @@ _SYSTEM_PROMPT = (
     "management and portfolio management firm in Gurgaon. Your audience consists entirely "
     "of highly technical professionals who have cleared CFA Level 3, including portfolio "
     "managers, institutional investors, and seasoned wealth advisors.\n\n"
-    "Given a structured article summary, generate content ideas for the firm's platforms "
-    "that meet the rigorous standards of CFA charterholders. Focus on deep portfolio "
-    "implications, risk-adjusted returns, macro/micro economic shifts, asset allocation "
-    "strategies, and institutional-grade analysis. DO NOT generate superficial or generic "
+    "Given a structured article summary and its identified affected segments, generate "
+    "highly personalized content ideas for the firm's platforms. Each idea MUST target a "
+    "specific institutional segment or persona (e.g. Fixed Income Managers, Equities Heads, "
+    "Corporate Treasuries, UHNW Advisors). Focus on deep portfolio implications, risk-adjusted "
+    "returns, asset allocation, and institutional-grade analysis. DO NOT generate superficial "
     "retail finance 'bullshit'. Respond with ONLY a JSON array — no markdown, no extra keys:\n\n"
     "[\n"
     "  {\n"
-    '    "platform": "linkedin" | "twitter" | "blog" | "email",\n'
-    '    "angle": "<advanced, descriptive analytical hook or angle for this platform>",\n'
-    '    "agent_reasoning": "<why this sophisticated angle engages CFA Level 3 cleared professionals>",\n'
+    '    "platform": "linkedin" | "twitter" | "blog" | "email" | "whatsapp" | "carousel" | "advisor_talking_points",\n'
+    '    "target_persona": "<specific investor or advisor segment this targets>",\n'
+    '    "angle": "<advanced, descriptive analytical hook or angle for this platform and persona>",\n'
+    '    "agent_reasoning": "<why this sophisticated angle engages this specific persona>",\n'
     '    "score": <float 0.0-10.0 representing institutional novelty + technical depth>\n'
     "  },\n"
     "  ...\n"
     "]\n\n"
-    "Generate exactly 2 ideas, each on a different platform. Respond with nothing but the JSON array."
+    "Generate exactly 3 ideas across different platforms, tailored to different personas "
+    "from the affected_segments. Respond with nothing but the JSON array."
 )
 
 
@@ -84,13 +87,18 @@ def generate_ideas(
         f"\n\nREJECTION PATTERNS TO AVOID:\n{rejection_summary}"
         if rejection_summary else ""
     )
+    segments_str = "\n".join(f"- {seg}" for seg in s.affected_segments)
+    sentiment_str = s.sentiment
+
     user_content = (
         f"Title: {article.title}\n\n"
         f"Story narrative:\n{s.story_narrative}\n\n"
+        f"Sentiment: {sentiment_str}\n\n"
         f"Key data points:\n{key_points_str}\n\n"
         f"Mechanism:\n{s.mechanism}\n\n"
         f"Implications:\n{s.implications}\n\n"
-        f"Suggested content angles:\n{angles_str}"
+        f"Suggested content angles:\n{angles_str}\n\n"
+        f"Affected Segments:\n{segments_str}"
         f"{rejection_block}"
     )
 
@@ -122,6 +130,7 @@ def generate_ideas(
                 continue
             ideas.append(IdeaCreate(
                 platform=Platform(platform_str),
+                target_persona=item.get("target_persona"),
                 angle=item["angle"],
                 agent_reasoning=item["agent_reasoning"],
                 score=float(item["score"]),

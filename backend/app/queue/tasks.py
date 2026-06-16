@@ -627,6 +627,8 @@ async def creation_agent_task(
     import time
     from app.agents.creation.brand_context import get_brand_context
     from app.agents.creation.content_generator import async_generate_content
+    from app.agents.creation.editor_agent import async_refine_draft
+    from app.agents.creation.compliance_agent import async_check_compliance
     from app.agents.creation.finance_flags import detect_finance_flags
     from app.agents.creation.db_writer import write_draft, upsert_cost_log
     from app.agents.scoring.embedder import embed_text
@@ -788,14 +790,37 @@ async def creation_agent_task(
                     _set_draft_status("failed", "Content generation returned empty")
                     return drafted, failed, local_in, local_out, local_errors, local_traces
 
-                # Step 5 — Detect finance flags
-                flags = detect_finance_flags(gen_result.draft_create.content_text)
+                draft_create = gen_result.draft_create
+
+                # Step 5 — Editor Agent
+                refined_text = await async_refine_draft(
+                    draft_text=draft_create.content_text,
+                    platform=draft_create.platform.value,
+                    client=anthropic_client,
+                    model=settings.claude_model_heavy
+                )
+                draft_create.content_text = refined_text
+
+                # Step 6 — Compliance Agent
+                comp_res = await async_check_compliance(
+                    draft_text=draft_create.content_text,
+                    client=anthropic_client,
+                    model=settings.claude_model_heavy
+                )
+                draft_create.content_text = comp_res.fixed_text
+                draft_create.compliance_status = comp_res.status
+
+                if comp_res.status != "approved":
+                    draft_create.agent_reasoning += f" | Compliance Note: {comp_res.reason}"
+
+                # Step 7 — Detect finance flags
+                flags = detect_finance_flags(draft_create.content_text)
                 draft_with_flags = DraftCreate(**{
-                    **gen_result.draft_create.model_dump(),
+                    **draft_create.model_dump(),
                     "finance_flags": flags,
                 })
 
-                # Step 6 — Write draft to DB
+                # Step 8 — Write draft to DB
                 draft_id = write_draft(supabase, draft_with_flags)
                 if draft_id:
                     drafted += 1

@@ -38,6 +38,33 @@ _SYSTEM_PROMPT = (
 )
 
 _PLATFORM_GUIDES: dict[str, str] = {
+    "whatsapp": (
+        "Write a highly concise WhatsApp broadcast message for institutional clients/advisors (under 150 words).\n\n"
+        "Structure:\n"
+        "- 🚨 Core macro/market update in one strong sentence.\n"
+        "- 📉 Impact on portfolios (use bullets).\n"
+        "- 💡 Actionable institutional perspective or tactical shift.\n"
+        "Tone is urgent, strictly professional, and skimmable."
+    ),
+    "carousel": (
+        "Write copy for a 5-10 slide analytical LinkedIn carousel.\n\n"
+        "Structure each slide explicitly:\n"
+        "[Slide 1: Hook] Data-driven question or statement.\n"
+        "[Slide 2-4: The Mechanism] Break down the quantitative drivers.\n"
+        "[Slide 5-7: Implications] What this means for specific asset classes.\n"
+        "[Slide 8: The Second-Order Effect] A non-obvious outcome.\n"
+        "[Slide 9: Conclusion] Institutional perspective.\n"
+        "Keep text per slide minimal and impactful."
+    ),
+    "advisor_talking_points": (
+        "Write internal talking points for wealth advisors to use in client meetings.\n\n"
+        "Structure:\n"
+        "- **The Event:** 1-sentence summary.\n"
+        "- **The Why:** Bullet points explaining the structural cause.\n"
+        "- **Client Impact:** How this affects specific portfolios.\n"
+        "- **What to say if asked:** Provide 2-3 scripted, highly professional responses to common client fears or questions.\n"
+        "Tone must be authoritative, calming, and analytical."
+    ),
     "linkedin": (
         "Write a long-form LinkedIn post (1,800–2,500 characters).\n\n"
         "Structure:\n"
@@ -167,14 +194,17 @@ def generate_content(
     if brand_context:
         context_section += f"\n\n{brand_context}"
 
+    target_persona = idea.target_persona or "CFA Level 3 Professional"
+
     user_prompt = (
         f"Content angle: {angle}\n"
+        f"Target Persona: {target_persona}\n"
         f"Platform: {platform}\n"
         f"{context_section}\n\n"
         f"Platform writing guide:\n{guide}\n\n"
         "Return ONLY a JSON object with these exact keys:\n"
         '{"content_text": "the complete content ready to post", '
-        '"reasoning": "1-2 sentences explaining why this angle works for this platform"}'
+        '"reasoning": "1-2 sentences explaining why this angle works for this persona on this platform"}'
     )
 
     try:
@@ -223,6 +253,7 @@ def generate_content(
         draft_create = DraftCreate(
             platform=idea.platform,
             content_text=content_text,
+            target_persona=target_persona,
             agent_reasoning=reasoning or f"Generated for {platform}",
             source_idea_id=idea.id,
             finance_flags=[],  # Populated separately by finance_flags module
@@ -280,14 +311,17 @@ async def async_generate_content(
     if brand_context:
         context_section += f"\n\n{brand_context}"
 
+    target_persona = idea.target_persona or "CFA Level 3 Professional"
+
     user_prompt = (
         f"Content angle: {angle}\n"
+        f"Target Persona: {target_persona}\n"
         f"Platform: {platform}\n"
         f"{context_section}\n\n"
         f"Platform writing guide:\n{guide}\n\n"
         "Return ONLY a JSON object with these exact keys:\n"
         '{"content_text": "the complete content ready to post", '
-        '"reasoning": "1-2 sentences explaining why this angle works for this platform"}'
+        '"reasoning": "1-2 sentences explaining why this angle works for this persona on this platform"}'
     )
 
     try:
@@ -332,6 +366,7 @@ async def async_generate_content(
         draft_create = DraftCreate(
             platform=idea.platform,
             content_text=content_text,
+            target_persona=target_persona,
             agent_reasoning=reasoning or f"Generated for {platform}",
             source_idea_id=idea.id,
             finance_flags=[],
