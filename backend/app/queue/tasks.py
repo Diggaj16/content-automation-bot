@@ -417,7 +417,7 @@ async def research_agent_task(
     arq_pool = ctx.get("redis")
     if arq_pool is not None:
         try:
-            await arq_pool.enqueue_job("scoring_agent_task", _queue="arq:scoring")
+            await arq_pool.enqueue_job("scoring_agent_task", _queue_name="arq:scoring")
             logger.info("research_agent_task: chained to scoring_agent_task")
         except Exception as exc:
             logger.warning(f"research_agent_task: failed to chain scoring | err={exc}")
@@ -1042,7 +1042,7 @@ async def publishing_agent_task(ctx: dict) -> dict:
                         post_id=post_id,
                         measurement_period=period,
                         _defer_by=timedelta(hours=hours),
-                        _queue="arq:analytics",
+                        _queue_name="arq:analytics",
                     )
 
             published_count += 1
