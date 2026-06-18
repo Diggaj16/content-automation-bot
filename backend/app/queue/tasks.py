@@ -69,7 +69,6 @@ async def research_agent_task(
     from playwright.async_api import async_playwright
     from app.agents.research.extractor import BROWSER_ARGS, BROWSER_CHANNEL, fetch_article, normalize_url
     from app.agents.research.scraper import scrape_homepage
-    from app.agents.research.reddit_scraper import scrape_reddit
     from app.agents.research.filters import is_url_seen, is_article_fresh, is_article_long_enough
     from app.agents.research.prescorer import async_pre_score_headlines
     from app.agents.research.summariser import async_summarise_article
@@ -135,15 +134,7 @@ async def research_agent_task(
         nonlocal haiku_in, haiku_out, sonnet_in, sonnet_out
         try:
             # Step 1 — Scrape section page.
-            # Reddit subreddits use the JSON API (no browser needed).
-            # Everything else uses the Playwright browser scraper.
-            if "reddit.com/r/" in site.section_url:
-                import re as _re
-                _sub = _re.search(r"reddit\.com/r/([^/?#]+)", site.section_url)
-                sub_name = _sub.group(1) if _sub else "IndiaInvestments"
-                links = await scrape_reddit(sub_name, site.site_name)
-            else:
-                links = await scrape_homepage(site.section_url, site.site_name, browser=_browser)
+            links = await scrape_homepage(site.section_url, site.site_name, browser=_browser)
             if not links:
                 await asyncio.to_thread(
                     record_site_failure, supabase, site.id,
@@ -238,24 +229,9 @@ async def research_agent_task(
                 to_fetch = []
 
             # Step 3b — Fetch articles in parallel.
-            # Reddit text posts already contain their content — no browser fetch needed.
-            # Link posts (Reddit or regular) go through fetch_article as normal.
-            from app.agents.research.extractor import ArticleContent as _AC
             _site_sem = asyncio.Semaphore(_ARTICLE_CONCURRENCY)
 
             async def _fetch(link):
-                # Reddit text post — content is already in the post body
-                if hasattr(link, "selftext") and link.selftext:
-                    return _AC(
-                        url=link.url,
-                        normalized_url=normalize_url(link.url),
-                        title=link.title,
-                        full_text=link.selftext,
-                        word_count=len(link.selftext.split()),
-                        paywall_detected=False,
-                        publication_date=None,
-                    )
-                # Regular article or Reddit link post — fetch from the URL
                 async with _global_fetch_sem:
                     async with _site_sem:
                         try:
