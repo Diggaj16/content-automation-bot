@@ -2,22 +2,15 @@
 # Growthvine Capital — Content Automation Stack
 #
 # Services:
-#   redis              — arq job queue
-#   api                — FastAPI server (uvicorn)
-#   worker-research    — dedicated arq worker: research_agent_task
-#   worker-scoring     — dedicated arq worker: scoring_agent_task
-#   worker-creation    — dedicated arq worker: creation_agent_task
-#   worker-publishing  — dedicated arq worker: publishing_agent_task
-#   worker-analytics   — dedicated arq worker: analytics_agent_task
-#   frontend           — Next.js admin panel
-#
-# Each agent type has its OWN queue (arq:research, arq:scoring, etc.) so jobs
-# run in parallel across worker containers without one agent type blocking another.
+#   redis    — arq job queue
+#   api      — FastAPI server (uvicorn)
+#   worker   — unified arq worker (all agent tasks on arq:default)
+#   frontend — Next.js admin panel
 #
 # Usage:
 #   docker compose up --build          # build + start all
 #   docker compose up --build -d       # detached
-#   docker compose logs -f worker-research  # tail research worker logs
+#   docker compose logs -f worker      # tail worker logs
 #   docker compose down -v             # stop + remove volumes
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -66,18 +59,16 @@ services:
       retries: 3
       start_period: 15s
 
-  # ── Dedicated arq workers ──────────────────────────────────────────────────
-  # Each worker monitors its own Redis queue and runs ONE agent type.
-  # This prevents a long research job from blocking publishing or analytics.
-
-  worker-research:
+  # ── Unified arq worker ────────────────────────────────────────────────────
+  # Single worker handles all agent types on arq:default queue.
+  worker:
     build:
       context: ./backend
       dockerfile: Dockerfile
     command:
       [
         "python", "-m", "arq",
-        "app.queue.research_worker.ResearchWorkerSettings"
+        "app.queue.worker.WorkerSettings"
       ]
     restart: unless-stopped
     env_file:
@@ -89,80 +80,7 @@ services:
         condition: service_healthy
     volumes:
       - browser_sessions:/root/.config/contentautomation/browser_sessions
-    # Playwright/Chromium needs at least 1 GB shared memory for stable page rendering.
     shm_size: "1gb"
-
-  worker-scoring:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    command:
-      [
-        "python", "-m", "arq",
-        "app.queue.scoring_worker.ScoringWorkerSettings"
-      ]
-    restart: unless-stopped
-    env_file:
-      - ./backend/.env
-    environment:
-      - REDIS_URL=redis://redis:6379
-    depends_on:
-      redis:
-        condition: service_healthy
-
-  worker-creation:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    command:
-      [
-        "python", "-m", "arq",
-        "app.queue.creation_worker.CreationWorkerSettings"
-      ]
-    restart: unless-stopped
-    env_file:
-      - ./backend/.env
-    environment:
-      - REDIS_URL=redis://redis:6379
-    depends_on:
-      redis:
-        condition: service_healthy
-
-  worker-publishing:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    command:
-      [
-        "python", "-m", "arq",
-        "app.queue.publishing_worker.PublishingWorkerSettings"
-      ]
-    restart: unless-stopped
-    env_file:
-      - ./backend/.env
-    environment:
-      - REDIS_URL=redis://redis:6379
-    depends_on:
-      redis:
-        condition: service_healthy
-
-  worker-analytics:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    command:
-      [
-        "python", "-m", "arq",
-        "app.queue.analytics_worker.AnalyticsWorkerSettings"
-      ]
-    restart: unless-stopped
-    env_file:
-      - ./backend/.env
-    environment:
-      - REDIS_URL=redis://redis:6379
-    depends_on:
-      redis:
-        condition: service_healthy
 
   # ── Next.js frontend ───────────────────────────────────────────────────────
   frontend:

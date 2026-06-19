@@ -111,7 +111,7 @@ function DraftCard({ draft, onAction }: { draft: Draft; onAction: (id: string) =
           {expanded ? draft.content_text : preview}{!expanded && hasMore && "…"}
         </p>
         {hasMore && (
-          <button onClick={() => setExpanded((v) => !v)} className="text-xs text-blue-600 hover:underline mt-1">
+          <button onClick={() => setExpanded((v) => !v)} className="text-xs hover:underline mt-1" style={{ color: "var(--brand-text)" }}>
             {expanded ? "Show less" : "Show more"}
           </button>
         )}
@@ -119,7 +119,7 @@ function DraftCard({ draft, onAction }: { draft: Draft; onAction: (id: string) =
 
       {draft.agent_reasoning && (
         <details className="text-xs">
-          <summary className="cursor-pointer text-blue-600 hover:underline">Agent reasoning</summary>
+          <summary className="cursor-pointer hover:underline" style={{ color: "var(--brand-text)" }}>Agent reasoning</summary>
           <p className="mt-1 text-gray-600 bg-gray-50 rounded p-2 leading-relaxed">{draft.agent_reasoning}</p>
         </details>
       )}
@@ -207,42 +207,51 @@ function ReadOnlyDraftRow({ draft }: { draft: Draft }) {
   const hasMore = draft.content_text.length > 160;
 
   return (
-    <div className="bg-white border border-gray-100 rounded-lg px-4 py-3 space-y-1">
-      <div className="flex items-center gap-3 flex-wrap">
-        <PlatformBadge platform={draft.platform} />
-        {draft.target_persona && (
-          <span className="px-2 py-0.5 rounded text-[10px] uppercase font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200">
-            {draft.target_persona}
-          </span>
-        )}
-        {draft.compliance_status && (
-          <span className={`px-2 py-0.5 rounded text-[10px] uppercase font-semibold border ${
-            draft.compliance_status === 'approved' ? 'bg-green-50 text-green-700 border-green-200' :
-            draft.compliance_status === 'flagged' ? 'bg-amber-50 text-amber-700 border-amber-200' :
-            'bg-red-50 text-red-700 border-red-200'
-          }`}>
-            Compliance: {draft.compliance_status}
-          </span>
-        )}
-        <p className="flex-1 text-sm text-gray-800 w-full mt-1 whitespace-pre-wrap leading-relaxed">
-          {expanded ? draft.content_text : preview}{!expanded && hasMore && "…"}
-        </p>
+    <div className="bg-white border border-gray-100 rounded-lg px-4 py-3 space-y-1.5">
+      {/* Row 1: badges (left) + date (right) */}
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-center gap-2 flex-wrap min-w-0">
+          <PlatformBadge platform={draft.platform} />
+          {draft.target_persona && (
+            <span className="px-2 py-0.5 rounded text-[10px] uppercase font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200">
+              {draft.target_persona}
+            </span>
+          )}
+          {draft.compliance_status && (
+            <span className={`px-2 py-0.5 rounded text-[10px] uppercase font-semibold border ${
+              draft.compliance_status === 'approved' ? 'bg-green-50 text-green-700 border-green-200' :
+              draft.compliance_status === 'flagged' ? 'bg-amber-50 text-amber-700 border-amber-200' :
+              'bg-red-50 text-red-700 border-red-200'
+            }`}>
+              Compliance: {draft.compliance_status}
+            </span>
+          )}
+        </div>
         <span className="text-xs text-gray-400 whitespace-nowrap">
           {new Date(draft.created_at).toLocaleDateString()}
         </span>
       </div>
-      {hasMore && (
-        <button onClick={() => setExpanded((v) => !v)} className="text-xs text-blue-600 hover:underline ml-1">
-          {expanded ? "Show less" : "Show more"}
-        </button>
-      )}
-      {draft.source_article && (
-        <div className="mt-1">
+
+      {/* Row 2: full-width content */}
+      <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed break-words">
+        {expanded ? draft.content_text : preview}{!expanded && hasMore && "…"}
+      </p>
+
+      {/* Row 3: actions */}
+      <div className="flex gap-3 flex-wrap">
+        {hasMore && (
+          <button onClick={() => setExpanded((v) => !v)} className="text-xs hover:underline" style={{ color: "var(--brand-text)" }}>
+            {expanded ? "Show less" : "Show more"}
+          </button>
+        )}
+        {draft.source_article && (
           <button onClick={() => setShowArticle((v) => !v)} className="text-xs text-green-700 hover:underline font-medium">
             {showArticle ? "Hide scraped article" : "View scraped article"}
           </button>
-          {showArticle && <div className="mt-2"><SourceArticlePanel article={draft.source_article} /></div>}
-        </div>
+        )}
+      </div>
+      {showArticle && draft.source_article && (
+        <div className="mt-1"><SourceArticlePanel article={draft.source_article} /></div>
       )}
     </div>
   );
@@ -287,11 +296,8 @@ function PaginationBar({
           <button
             key={p}
             onClick={() => onPageChange(p)}
-            className={`px-3 py-1.5 text-sm border rounded ${
-              p === currentPage
-                ? "bg-blue-600 text-white border-blue-600"
-                : "border-gray-300 text-gray-700 hover:bg-gray-50"
-            }`}
+            className="px-3 py-1.5 text-sm border rounded border-gray-300 text-gray-700 hover:bg-gray-50"
+            style={p === currentPage ? { background: "var(--brand)", color: "#fff", borderColor: "var(--brand)" } : undefined}
           >
             {p}
           </button>
@@ -441,11 +447,8 @@ export default function DraftsPage() {
           <button
             key={t}
             onClick={() => setTab(t)}
-            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
-              tab === t
-                ? "border-blue-600 text-blue-700"
-                : "border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300"
-            }`}
+            className="px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300"
+            style={tab === t ? { borderColor: "var(--brand)", color: "var(--brand-text)" } : undefined}
           >
             {TAB_LABELS[t]}
           </button>

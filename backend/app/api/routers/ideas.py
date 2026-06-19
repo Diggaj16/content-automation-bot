@@ -28,11 +28,26 @@ def list_ideas(
         description="Filter by approval_status. Pass empty string to skip filter.",
     ),
     limit: int = Query(default=50, ge=1, le=200),
+    page: int = Query(default=1, ge=1),
     supabase: Client = Depends(get_supabase),
-) -> list[dict]:
-    """Return ideas with their source article scraped data joined."""
+) -> dict:
+    """Return ideas with their source article scraped data joined, newest first."""
     try:
-        query = supabase.table("ideas").select("*").limit(limit)
+        offset = (page - 1) * limit
+
+        # Total count for pagination
+        count_query = supabase.table("ideas").select("id", count="exact")
+        if status:
+            count_query = count_query.eq("approval_status", status)
+        total = (count_query.execute().count or 0)
+
+        query = (
+            supabase.table("ideas")
+            .select("*")
+            .order("created_at", desc=True)
+            .limit(limit)
+            .offset(offset)
+        )
         if status:
             query = query.eq("approval_status", status)
         resp = query.execute()
@@ -59,7 +74,14 @@ def list_ideas(
             aid = idea.get("source_article_id")
             idea["source_article"] = articles_by_id.get(aid) if aid else None
 
-        return ideas
+        import math
+        return {
+            "data": ideas,
+            "total": total,
+            "page": page,
+            "limit": limit,
+            "total_pages": max(1, math.ceil(total / limit)),
+        }
     except Exception as exc:
         logger.warning("list_ideas failed", extra={"error": str(exc)})
         raise HTTPException(status_code=500, detail="Internal server error")

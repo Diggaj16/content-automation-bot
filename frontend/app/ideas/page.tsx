@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import useSWR from "swr";
-import { getIdeas, approveIdea, triggerCreation, type Idea } from "../lib/api";
+import { getIdeas, approveIdea, triggerCreation, type Idea, type IdeasResponse } from "../lib/api";
 import { useJobStatus } from "../hooks/useJobStatus";
 import SourceArticlePanel from "../components/SourceArticlePanel";
 
@@ -108,7 +108,7 @@ const IdeaCard = React.memo(function IdeaCard({
 
       <div className="flex gap-3">
         {idea.agent_reasoning && (
-          <button onClick={() => setShowReasoning((v) => !v)} className="text-xs text-blue-600 hover:underline">
+          <button onClick={() => setShowReasoning((v) => !v)} className="text-xs hover:underline" style={{ color: "var(--brand-text)" }}>
             {showReasoning ? "Hide reasoning" : "Show reasoning"}
           </button>
         )}
@@ -128,7 +128,7 @@ const IdeaCard = React.memo(function IdeaCard({
         <div className="space-y-2 pt-1">
           <label className="block text-xs font-medium text-gray-700">Edit angle before approving</label>
           <textarea
-            className="w-full text-sm border border-gray-300 rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="w-full text-sm border border-gray-300 rounded px-3 py-2 focus:outline-none focus:ring-2" style={{ "--tw-ring-color": "var(--brand)" } as React.CSSProperties}
             rows={3}
             value={editedAngle}
             onChange={(e) => setEditedAngle(e.target.value)}
@@ -166,24 +166,28 @@ const IdeaCard = React.memo(function IdeaCard({
 
 const ReadOnlyIdeaRow = React.memo(function ReadOnlyIdeaRow({ idea }: { idea: Idea }) {
   return (
-    <div className="flex items-center gap-3 py-2.5 px-4 bg-white border border-gray-100 rounded-lg flex-wrap">
-      <PlatformBadge platform={idea.platform} />
-      {idea.target_persona && (
-        <span className="px-2 py-0.5 rounded text-[10px] uppercase font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200">
-          {idea.target_persona}
+    <div className="bg-white border border-gray-100 rounded-lg px-4 py-3 space-y-1.5">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-2 flex-wrap">
+          <PlatformBadge platform={idea.platform} />
+          {idea.target_persona && (
+            <span className="px-2 py-0.5 rounded text-[10px] uppercase font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200">
+              {idea.target_persona}
+            </span>
+          )}
+          {idea.score != null && (
+            <span className="px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-700">
+              Score: {idea.score.toFixed(2)}
+            </span>
+          )}
+        </div>
+        <span className="text-xs text-gray-400 whitespace-nowrap">
+          {new Date(idea.created_at).toLocaleDateString()}
         </span>
-      )}
-      {idea.score != null && (
-        <span className="text-xs text-gray-400 tabular-nums whitespace-nowrap">
-          {idea.score.toFixed(1)}
-        </span>
-      )}
-      <p className="flex-1 text-sm text-gray-800 truncate">
+      </div>
+      <p className="text-sm text-gray-800">
         {idea.edited_angle || idea.angle}
       </p>
-      <span className="text-xs text-gray-400 whitespace-nowrap">
-        {new Date(idea.created_at).toLocaleDateString()}
-      </span>
     </div>
   );
 });
@@ -223,20 +227,26 @@ export default function IdeasPage() {
   const [sendingToCreation, setSendingToCreation] = useState(false);
 
   const [rejectingAll, setRejectingAll] = useState(false);
+  const [page, setPage] = useState(1);
+  const PAGE_SIZE = 50;
 
   const creationJob = useJobStatus();
 
   // ── SWR fetch ──────────────────────────────────────────────────────────────
   const {
-    data: ideas = [],
+    data: ideasResp,
     isLoading: loading,
     error: swrError,
     mutate: refreshIdeas,
-  } = useSWR(
-    `/api/proxy/ideas?status=${tab}`,
-    () => getIdeas(tab),
+  } = useSWR<IdeasResponse>(
+    `/api/proxy/ideas?status=${tab}&page=${page}`,
+    () => getIdeas(tab, page, PAGE_SIZE),
     { revalidateOnFocus: false, dedupingInterval: 3000 }
   );
+
+  const ideas = ideasResp?.data ?? [];
+  const totalPages = ideasResp?.total_pages ?? 1;
+  const total = ideasResp?.total ?? 0;
 
   const error = swrError instanceof Error ? swrError.message : swrError ? "Failed to load ideas" : null;
 
@@ -273,7 +283,10 @@ export default function IdeasPage() {
   // ── handlers ───────────────────────────────────────────────────────────────
   const handleAction = useCallback((id: string) => {
     // Optimistic update: remove acted-on idea from SWR cache immediately
-    refreshIdeas((prev = []) => prev.filter((i) => i.id !== id), false);
+    refreshIdeas((prev) =>
+      prev ? { ...prev, data: prev.data.filter((i) => i.id !== id) } : prev,
+      false
+    );
     showToast("Action recorded.");
     // Background revalidate to sync with server
     refreshIdeas();
@@ -295,7 +308,10 @@ export default function IdeasPage() {
       try {
         await approveIdea(id, { approval_status: "rejected" });
         // Optimistic update per-item as we go
-        refreshIdeas((prev = []) => prev.filter((i) => i.id !== id), false);
+        refreshIdeas((prev) =>
+          prev ? { ...prev, data: prev.data.filter((i) => i.id !== id) } : prev,
+          false
+        );
         count++;
       } catch {
         // continue with others
@@ -342,9 +358,9 @@ export default function IdeasPage() {
           <p className="text-sm text-gray-500 mt-0.5">
             {loading
               ? "Loading…"
-              : `${ideas.length} idea${ideas.length !== 1 ? "s" : ""}${
+              : `${total} idea${total !== 1 ? "s" : ""}${
                   platformFilter ? ` · ${displayedIdeas.length} shown` : ""
-                }`}
+                }${totalPages > 1 ? ` · page ${page} of ${totalPages}` : ""}`}
           </p>
         </div>
         <button
@@ -363,14 +379,16 @@ export default function IdeasPage() {
             key={t}
             onClick={() => {
               setTab(t);
+              setPage(1);
               setSortBy(t === "pending_approval" ? "score_desc" : "date_desc");
               setPlatformFilter("");
             }}
             className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
               tab === t
-                ? "border-blue-600 text-blue-700"
+                ? "border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300"
                 : "border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300"
             }`}
+            style={tab === t ? { borderColor: "var(--brand)", color: "var(--brand-text)" } : undefined}
           >
             {TAB_LABELS[t]}
           </button>
@@ -451,6 +469,29 @@ export default function IdeasPage() {
               <ReadOnlyIdeaRow key={idea.id} idea={idea} />
             ))}
       </div>
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-center gap-3 pt-2">
+          <button
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            disabled={page === 1 || loading}
+            className="px-3 py-1.5 text-sm border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 disabled:opacity-40"
+          >
+            ← Prev
+          </button>
+          <span className="text-sm text-gray-500">
+            Page {page} of {totalPages}
+          </span>
+          <button
+            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+            disabled={page === totalPages || loading}
+            className="px-3 py-1.5 text-sm border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 disabled:opacity-40"
+          >
+            Next →
+          </button>
+        </div>
+      )}
 
       {/* Sticky "send to creation" bar — appears once ideas are approved */}
       {approvedIds.length > 0 && (

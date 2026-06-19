@@ -2,6 +2,7 @@
 
 import { use } from "react";
 import TableBrowser from "../../components/TableBrowser";
+import CostSummary from "../../components/CostSummary";
 
 const TABLE_TITLES: Record<string, string> = {
   curated_sites: "Curated Sites",
@@ -29,5 +30,10 @@ export default function TablePage({
   const { table } = use(params);
   const title = TABLE_TITLES[table] || table;
 
-  return <TableBrowser tableName={table} title={title} />;
+  return (
+    <div className="space-y-4">
+      {table === "cost_log" && <CostSummary />}
+      <TableBrowser tableName={table} title={title} />
+    </div>
+  );
 }

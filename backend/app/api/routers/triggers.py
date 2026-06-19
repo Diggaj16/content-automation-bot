@@ -32,7 +32,7 @@ async def trigger_research(pool=Depends(get_arq_pool)) -> dict:
         raise HTTPException(
             status_code=503, detail="Queue unavailable — Redis not connected"
         )
-    job = await pool.enqueue_job("research_agent_task", _queue_name="arq:research")
+    job = await pool.enqueue_job("research_agent_task")
     return {
         "job_id": job.job_id if job else None,
         "status": "enqueued",
@@ -47,7 +47,7 @@ async def trigger_scoring(pool=Depends(get_arq_pool)) -> dict:
         raise HTTPException(
             status_code=503, detail="Queue unavailable — Redis not connected"
         )
-    job = await pool.enqueue_job("scoring_agent_task", _queue_name="arq:scoring")
+    job = await pool.enqueue_job("scoring_agent_task")
     return {
         "job_id": job.job_id if job else None,
         "status": "enqueued",
@@ -73,7 +73,6 @@ async def trigger_creation(
         "creation_agent_task",
         idea_ids=body.idea_ids,
         content_type=body.content_type.value,
-        _queue_name="arq:creation",
     )
     return {
         "job_id": job.job_id if job else None,

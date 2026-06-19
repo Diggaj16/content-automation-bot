@@ -14,8 +14,16 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json();
 }
 
-export async function getIdeas(status = "pending_approval") {
-  return apiFetch<Idea[]>(`/ideas?status=${status}&limit=50`);
+export interface IdeasResponse {
+  data: Idea[];
+  total: number;
+  page: number;
+  limit: number;
+  total_pages: number;
+}
+
+export async function getIdeas(status = "pending_approval", page = 1, limit = 50) {
+  return apiFetch<IdeasResponse>(`/ideas?status=${status}&limit=${limit}&page=${page}`);
 }
 
 export async function approveIdea(
