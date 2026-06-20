@@ -31,11 +31,13 @@ function PlatformBadge({ platform }: { platform: string }) {
 
 const IdeaCard = React.memo(function IdeaCard({
   idea,
+  siblingIds,
   onAction,
   onApproved,
 }: {
   idea: Idea;
-  onAction: (id: string) => void;
+  siblingIds: string[];
+  onAction: (ids: string[]) => void;
   onApproved: (id: string) => void;
 }) {
   const [showReasoning, setShowReasoning] = useState(false);
@@ -53,7 +55,9 @@ const IdeaCard = React.memo(function IdeaCard({
         edited_angle: editedAngle !== idea.angle ? editedAngle : undefined,
       });
       onApproved(idea.id);
-      onAction(idea.id);
+      // Backend discards still-pending siblings on approval — drop them from
+      // the UI in the same pass instead of waiting for a background refetch.
+      onAction([idea.id, ...siblingIds]);
     } catch (e: unknown) {
       setLocalError(e instanceof Error ? e.message : "Failed to approve");
     } finally {
@@ -65,7 +69,7 @@ const IdeaCard = React.memo(function IdeaCard({
     setBusy(true); setLocalError(null);
     try {
       await approveIdea(idea.id, { approval_status: "rejected" });
-      onAction(idea.id);
+      onAction([idea.id]);
     } catch (e: unknown) {
       setLocalError(e instanceof Error ? e.message : "Failed to reject");
     } finally {
@@ -280,14 +284,37 @@ export default function IdeasPage() {
     return sorted;
   }, [ideas, platformFilter, sortBy]);
 
+  // Group sibling ideas (same source article) together, preserving the sort
+  // order above — a group's position is set by its first (best-ranked) member.
+  const ideaGroups = useMemo(() => {
+    const groups: { key: string; ideas: Idea[] }[] = [];
+    const indexByKey = new Map<string, number>();
+    for (const idea of displayedIdeas) {
+      const key = idea.source_article_id ?? idea.id;
+      const idx = indexByKey.get(key);
+      if (idx === undefined) {
+        indexByKey.set(key, groups.length);
+        groups.push({ key, ideas: [idea] });
+      } else {
+        groups[idx].ideas.push(idea);
+      }
+    }
+    return groups;
+  }, [displayedIdeas]);
+
   // ── handlers ───────────────────────────────────────────────────────────────
-  const handleAction = useCallback((id: string) => {
-    // Optimistic update: remove acted-on idea from SWR cache immediately
+  const handleAction = useCallback((ids: string[]) => {
+    // Optimistic update: remove acted-on idea(s) from SWR cache immediately
+    const idSet = new Set(ids);
     refreshIdeas((prev) =>
-      prev ? { ...prev, data: prev.data.filter((i) => i.id !== id) } : prev,
+      prev ? { ...prev, data: prev.data.filter((i) => !idSet.has(i.id)) } : prev,
       false
     );
-    showToast("Action recorded.");
+    showToast(
+      ids.length > 1
+        ? `Action recorded — ${ids.length - 1} other idea(s) from this article discarded.`
+        : "Action recorded."
+    );
     // Background revalidate to sync with server
     refreshIdeas();
   }, [showToast, refreshIdeas]);
@@ -457,14 +484,33 @@ export default function IdeasPage() {
       {/* Cards (pending) or compact rows (approved/rejected) */}
       <div className="grid gap-3">
         {tab === "pending_approval"
-          ? displayedIdeas.map((idea) => (
-              <IdeaCard
-                key={idea.id}
-                idea={idea}
-                onAction={handleAction}
-                onApproved={handleApproved}
-              />
-            ))
+          ? ideaGroups.map((group) => {
+              const isGroup = group.ideas.length > 1;
+              const articleTitle = group.ideas[0].source_article?.title;
+              const cards = group.ideas.map((idea) => (
+                <IdeaCard
+                  key={idea.id}
+                  idea={idea}
+                  siblingIds={group.ideas.filter((i) => i.id !== idea.id).map((i) => i.id)}
+                  onAction={handleAction}
+                  onApproved={handleApproved}
+                />
+              ));
+              if (!isGroup) return cards[0];
+              return (
+                <div key={group.key} className="border border-gray-200 rounded-lg bg-gray-50/60 p-3 space-y-3">
+                  <div className="flex items-center gap-2 px-1">
+                    <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                      {group.ideas.length} ideas from the same article
+                    </span>
+                    {articleTitle && (
+                      <span className="text-xs text-gray-400 truncate">— {articleTitle}</span>
+                    )}
+                  </div>
+                  <div className="grid gap-3">{cards}</div>
+                </div>
+              );
+            })
           : displayedIdeas.map((idea) => (
               <ReadOnlyIdeaRow key={idea.id} idea={idea} />
             ))}

@@ -1,8 +1,8 @@
 """
 DB write helpers for the research agent.
 
-All functions are synchronous (supabase-py). Call from async arq tasks directly —
-each is a single fast HTTP call to Supabase.
+All functions are synchronous (SQLAlchemy). Call from async arq tasks via
+asyncio.to_thread, or directly if already on a worker thread.
 """
 from __future__ import annotations
 
@@ -10,17 +10,20 @@ from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
-from supabase import Client
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.orm import Session
 
 from app.agents.research.extractor import ArticleContent
 from app.db.models import StructuredSummary
+from app.db.orm import CostLog, CuratedSite, RawContent, SiteHealthLog
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 
 def upsert_raw_content(
-    supabase: Client,
+    db: Session,
     content: ArticleContent,
     summary: StructuredSummary,
     pre_score: float,
@@ -32,7 +35,7 @@ def upsert_raw_content(
     Returns the UUID string of the created row, or None on failure.
     The caller should not retry on None — the pipeline continues without this article.
     """
-    payload = {
+    payload: dict = {
         "url":                  content.url,
         "normalized_url":       content.normalized_url,
         "title":                content.title,
@@ -45,49 +48,52 @@ def upsert_raw_content(
         "paywall_detected":     content.paywall_detected,
     }
     if content.publication_date:
-        payload["publication_date"] = content.publication_date.isoformat()
+        payload["publication_date"] = content.publication_date
 
     try:
-        # Use upsert with ON CONFLICT on normalized_url so that if the same article
-        # URL reaches this point twice (race condition, is_url_seen DB error, etc.)
-        # Postgres updates the existing row instead of raising a unique violation.
-        resp = (
-            supabase.table("raw_content")
-            .upsert(payload, on_conflict="normalized_url")
-            .execute()
+        # ON CONFLICT on normalized_url so that if the same article URL reaches
+        # this point twice (race condition, is_url_seen DB error, etc.) Postgres
+        # updates the existing row instead of raising a unique violation.
+        stmt = (
+            pg_insert(RawContent)
+            .values(**payload)
+            .on_conflict_do_update(index_elements=["normalized_url"], set_=payload)
+            .returning(RawContent.id)
         )
-        if not resp.data:
+        row = db.execute(stmt).first()
+        db.commit()
+        if not row:
             logger.warning("upsert_raw_content: upsert returned empty data", extra={"url": content.url})
             return None
-        article_id: str = resp.data[0]["id"]
+        article_id = str(row[0])
         logger.info("upsert_raw_content: stored", extra={"id": article_id, "url": content.url})
         return article_id
     except Exception as exc:
+        db.rollback()
         logger.warning("upsert_raw_content failed", extra={"url": content.url, "error": str(exc)})
         return None
 
 
-def record_site_success(supabase: Client, site_id: UUID) -> None:
+def record_site_success(db: Session, site_id: UUID) -> None:
     """
     Reset consecutive_failures to 0, set last_run_at to now, insert success health log row.
     """
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(timezone.utc)
     try:
-        supabase.table("curated_sites").update({
-            "consecutive_failures": 0,
-            "last_run_at": now_iso,
-        }).eq("id", str(site_id)).execute()
-
-        supabase.table("site_health_log").insert({
-            "site_id": str(site_id),
-            "success": True,
-        }).execute()
+        site = db.get(CuratedSite, site_id)
+        if site is None:
+            return
+        site.consecutive_failures = 0
+        site.last_run_at = now
+        db.add(SiteHealthLog(site_id=site_id, success=True))
+        db.commit()
     except Exception as exc:
+        db.rollback()
         logger.warning("record_site_success failed", extra={"site_id": str(site_id), "error": str(exc)})
 
 
 def record_site_failure(
-    supabase: Client,
+    db: Session,
     site_id: UUID,
     error: str,
     failure_threshold: int,
@@ -99,31 +105,24 @@ def record_site_failure(
     """
     deactivated = False
     try:
-        # Read current failure count
-        resp = supabase.table("curated_sites").select("id, consecutive_failures").eq("id", str(site_id)).limit(1).execute()
-        if not resp.data:
+        site = db.get(CuratedSite, site_id)
+        if site is None:
             return False
 
-        current_failures = resp.data[0].get("consecutive_failures", 0)
-        new_failures = current_failures + 1
-
-        update_payload: dict = {"consecutive_failures": new_failures}
+        new_failures = site.consecutive_failures + 1
+        site.consecutive_failures = new_failures
         if new_failures >= failure_threshold:
-            update_payload["active"] = False
+            site.active = False
             deactivated = True
             logger.warning(
                 "record_site_failure: site deactivated",
                 extra={"site_id": str(site_id), "failures": new_failures},
             )
 
-        supabase.table("curated_sites").update(update_payload).eq("id", str(site_id)).execute()
-
-        supabase.table("site_health_log").insert({
-            "site_id": str(site_id),
-            "success": False,
-            "error_message": error[:500],  # cap length
-        }).execute()
+        db.add(SiteHealthLog(site_id=site_id, success=False, error_message=error[:500]))
+        db.commit()
     except Exception as exc:
+        db.rollback()
         logger.warning("record_site_failure failed", extra={"site_id": str(site_id), "error": str(exc)})
         deactivated = False  # DB write may not have completed; don't report deactivation that didn't happen
 
@@ -131,7 +130,7 @@ def record_site_failure(
 
 
 def upsert_cost_log(
-    supabase: Client,
+    db: Session,
     agent_name: str,
     total_usd: float,
     token_count: int,
@@ -139,31 +138,24 @@ def upsert_cost_log(
     """
     Increment today's cost_log row for this agent (or create it if not present).
 
-    Uses read-then-write since supabase-py's .upsert() cannot do incremental
-    arithmetic updates. Safe for single-process arq workers.
+    Read-then-write inside one transaction. Safe for single-process arq workers.
     """
-    today = str(datetime.now(timezone.utc).date())
+    today = datetime.now(timezone.utc).date()
     try:
-        existing = (
-            supabase.table("cost_log")
-            .select("id, token_count, estimated_cost_usd")
-            .eq("agent_name", agent_name)
-            .eq("date", today)
-            .limit(1)
-            .execute()
-        )
-        if existing.data:
-            row = existing.data[0]
-            supabase.table("cost_log").update({
-                "token_count": row["token_count"] + token_count,
-                "estimated_cost_usd": round(row["estimated_cost_usd"] + total_usd, 6),
-            }).eq("id", row["id"]).execute()
+        row = db.execute(
+            select(CostLog).where(CostLog.agent_name == agent_name, CostLog.date == today)
+        ).scalar_one_or_none()
+        if row is not None:
+            row.token_count += token_count
+            row.estimated_cost_usd = round(row.estimated_cost_usd + total_usd, 6)
         else:
-            supabase.table("cost_log").insert({
-                "agent_name": agent_name,
-                "date": today,
-                "token_count": token_count,
-                "estimated_cost_usd": round(total_usd, 6),
-            }).execute()
+            db.add(CostLog(
+                agent_name=agent_name,
+                date=today,
+                token_count=token_count,
+                estimated_cost_usd=round(total_usd, 6),
+            ))
+        db.commit()
     except Exception as exc:
+        db.rollback()
         logger.warning("upsert_cost_log failed", extra={"agent": agent_name, "error": str(exc)})

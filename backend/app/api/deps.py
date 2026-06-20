@@ -4,20 +4,20 @@ Centralised so tests can override individual deps cleanly via
 app.dependency_overrides[original_dep] = lambda: mock_value.
 """
 from fastapi import Depends, Header, HTTPException, Request
-from supabase import Client
-from typing import Optional
+from typing import Iterator, Optional
+
+from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings as _get_settings
-from app.db.client import get_supabase_client
+from app.db.session import get_db as _get_db
 import hmac
-import secrets
 
 def get_settings() -> Settings:
     return _get_settings()
 
 
-def get_supabase() -> Client:
-    return get_supabase_client()
+def get_db() -> Iterator[Session]:
+    yield from _get_db()
 
 
 def get_arq_pool(request: Request):

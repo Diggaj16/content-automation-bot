@@ -12,6 +12,7 @@ python-dotenv==1.2.2
 sqlalchemy==2.0.44
 psycopg[binary]==3.2.10
 pgvector==0.4.1
+alembic==1.18.4
 
 # ── Database / Supabase (legacy — retained during migration) ───────────────
 supabase==2.30.0

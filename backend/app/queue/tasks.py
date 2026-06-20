@@ -4,10 +4,46 @@ Each agent plan replaces its stub with the real implementation.
 """
 import asyncio
 
-from anthropic import Anthropic, AsyncAnthropic
+from anthropic import AsyncAnthropic
+from sqlalchemy import select
+
+from app.db.orm import CuratedSite as CuratedSiteORM
+from app.db.orm import Draft as DraftORM
+from app.db.orm import Idea as IdeaORM
+from app.db.orm import PublishedPost as PublishedPostORM
+from app.db.orm import RawContent as RawContentORM
+from app.db.orm import RunLog as RunLogORM
+from app.db.orm import UserDecisionSummary as UserDecisionSummaryORM
+from app.db.session import session_scope
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def _with_db(fn, *args, **kwargs):
+    """Run fn(db, *args, **kwargs) in its own short-lived session.
+
+    Safe to call from any thread or concurrently-gathered coroutine — a
+    SQLAlchemy Session must never be shared across concurrent units of work,
+    unlike the long-lived Supabase client this replaces.
+    """
+    with session_scope() as db:
+        return fn(db, *args, **kwargs)
+
+
+def _write_run_log(db, run_log) -> None:
+    db.add(RunLogORM(
+        agent_name=run_log.agent_name,
+        trigger_type=run_log.trigger_type.value,
+        processed_count=run_log.processed_count,
+        success_count=run_log.success_count,
+        failure_count=run_log.failure_count,
+        duration_seconds=run_log.duration_seconds,
+        reasoning_trace=run_log.reasoning_trace,
+        errors=run_log.errors,
+        token_cost=run_log.token_cost,
+    ))
+    db.commit()
 
 # Max simultaneous article fetches PER SITE — keep low: each fetch launches an
 # Edge process; too many at once (7 sites × 3 = 21 browsers) starves the machine
@@ -69,7 +105,7 @@ async def research_agent_task(
     from playwright.async_api import async_playwright
     from app.agents.research.extractor import BROWSER_ARGS, BROWSER_CHANNEL, fetch_article, normalize_url
     from app.agents.research.scraper import scrape_homepage
-    from app.agents.research.filters import is_url_seen, is_article_fresh, is_article_long_enough
+    from app.agents.research.filters import is_article_fresh, is_article_long_enough
     from app.agents.research.prescorer import async_pre_score_headlines
     from app.agents.research.summariser import async_summarise_article
     from app.agents.research.db_writer import (
@@ -80,7 +116,6 @@ async def research_agent_task(
     from app.db.models import CuratedSite, RunLogCreate, TriggerType
 
     settings = ctx["settings"]
-    supabase = ctx["supabase"]
     start_time = time.time()
 
     anthropic_client = AsyncAnthropic(api_key=settings.anthropic_api_key)
@@ -114,8 +149,11 @@ async def research_agent_task(
 
     # Fetch all active sites
     try:
-        sites_resp = supabase.table("curated_sites").select("*").eq("active", True).execute()
-        sites = [CuratedSite(**s) for s in sites_resp.data]
+        with session_scope() as db:
+            site_rows = db.execute(
+                select(CuratedSiteORM).where(CuratedSiteORM.active.is_(True))
+            ).scalars().all()
+            sites = [CuratedSite.model_validate(s, from_attributes=True) for s in site_rows]
     except Exception as exc:
         logger.error(f"research_agent_task: failed to fetch curated_sites | err={exc}")
         return {
@@ -137,7 +175,7 @@ async def research_agent_task(
             links = await scrape_homepage(site.section_url, site.site_name, browser=_browser)
             if not links:
                 await asyncio.to_thread(
-                    record_site_failure, supabase, site.id,
+                    _with_db, record_site_failure, site.id,
                     "No links extracted", settings.site_failure_pause_threshold
                 )
                 async with _lock:
@@ -194,25 +232,28 @@ async def research_agent_task(
                 skipped_count += low_score_count
 
             if score_filtered:
-                # Batch dedup — serialised to 2 concurrent calls to avoid exhausting Supabase pool
-                norm_map = {normalize_url(l.url): (l, s) for l, s in score_filtered}
+                # Batch dedup — serialised to 2 concurrent calls to avoid exhausting the DB pool
+                norm_map = {normalize_url(link.url): (link, s) for link, s in score_filtered}
+
+                def _check_seen(db, urls):
+                    rows = db.execute(
+                        select(RawContentORM.normalized_url).where(RawContentORM.normalized_url.in_(urls))
+                    ).all()
+                    return {r[0] for r in rows}
+
                 try:
                     async with _dedup_sem:
-                        seen_resp = await asyncio.to_thread(
-                            lambda: supabase.table("raw_content")
-                            .select("normalized_url")
-                            .in_("normalized_url", list(norm_map.keys()))
-                            .execute()
+                        seen_set = await asyncio.to_thread(
+                            _with_db, _check_seen, list(norm_map.keys())
                         )
-                        seen_set = {r["normalized_url"] for r in (seen_resp.data or [])}
                 except Exception as dedup_exc:
                     logger.warning("research: batch dedup failed, assuming all unseen",
                                    extra={"error": str(dedup_exc)})
                     seen_set = set()
 
                 to_fetch = [
-                    (l, s, norm)
-                    for norm, (l, s) in norm_map.items()
+                    (link, s, norm)
+                    for norm, (link, s) in norm_map.items()
                     if norm not in seen_set
                 ]
                 async with _lock:
@@ -293,7 +334,7 @@ async def research_agent_task(
 
                     # Step 5 — Write to DB (wrap sync call in thread)
                     article_id = await asyncio.to_thread(
-                        upsert_raw_content, supabase, content, sum_result.summary, score,
+                        _with_db, upsert_raw_content, content, sum_result.summary, score,
                         source_name=site.site_name,
                     )
                     if article_id:
@@ -318,7 +359,7 @@ async def research_agent_task(
                     async with _lock:
                         failure_count += 1
 
-            await asyncio.to_thread(record_site_success, supabase, site.id)
+            await asyncio.to_thread(_with_db, record_site_success, site.id)
 
         except Exception as exc:
             logger.error(f"research_agent_task: site error | site={site.site_name} | err={exc}")
@@ -326,7 +367,7 @@ async def research_agent_task(
                 errors.append({"site": site.site_name, "error": str(exc)})
                 failure_count += 1
             await asyncio.to_thread(
-                record_site_failure, supabase, site.id, str(exc), settings.site_failure_pause_threshold
+                _with_db, record_site_failure, site.id, str(exc), settings.site_failure_pause_threshold
             )
 
     try:
@@ -355,7 +396,7 @@ async def research_agent_task(
     }
 
     # Accumulate daily cost
-    await asyncio.to_thread(upsert_cost_log, supabase, "research_agent", total_usd=total_usd, token_count=total_tokens)
+    await asyncio.to_thread(_with_db, upsert_cost_log, "research_agent", total_usd=total_usd, token_count=total_tokens)
 
     # Write run_log
     trigger = TriggerType.CRON if (topic is None and url is None) else TriggerType.MANUAL
@@ -371,7 +412,7 @@ async def research_agent_task(
         token_cost=token_cost_dict,
     )
     try:
-        await asyncio.to_thread(lambda: supabase.table("run_logs").insert(run_log.model_dump()).execute())
+        await asyncio.to_thread(_with_db, _write_run_log, run_log)
     except Exception as exc:
         logger.error(f"research_agent_task: failed to write run_log | err={exc}")
 
@@ -425,7 +466,6 @@ async def scoring_agent_task(ctx: dict) -> dict:
     from app.db.models import RawContent, IdeaCreate, RunLogCreate, TriggerType
 
     settings = ctx["settings"]
-    supabase = ctx["supabase"]
     start_time = time.time()
 
     anthropic_client = Anthropic(api_key=settings.anthropic_api_key)
@@ -444,8 +484,11 @@ async def scoring_agent_task(ctx: dict) -> dict:
     sonnet_in = sonnet_out = 0
 
     try:
-        resp = supabase.table("raw_content").select("*").eq("processed", False).limit(50).execute()
-        articles = [RawContent(**r) for r in resp.data]
+        with session_scope() as db:
+            article_rows = db.execute(
+                select(RawContentORM).where(RawContentORM.processed.is_(False)).limit(50)
+            ).scalars().all()
+            articles = [RawContent.model_validate(r, from_attributes=True) for r in article_rows]
     except Exception as exc:
         logger.error(f"scoring_agent_task: failed to fetch raw_content | err={exc}")
         return {
@@ -464,83 +507,83 @@ async def scoring_agent_task(ctx: dict) -> dict:
     # angles the user has already rejected.
     rejection_summary = ""
     try:
-        _ds = (
-            supabase.table("user_decision_summaries")
-            .select("summary_text")
-            .order("created_at", desc=True)
-            .limit(1)
-            .execute()
-        )
-        if _ds.data:
-            rejection_summary = _ds.data[0]["summary_text"]
+        with session_scope() as db:
+            row = db.execute(
+                select(UserDecisionSummaryORM.summary_text)
+                .order_by(UserDecisionSummaryORM.created_at.desc())
+                .limit(1)
+            ).first()
+            if row:
+                rejection_summary = row[0]
     except Exception:
         pass  # non-fatal — scoring proceeds without the summary
 
     max_ideas_per_site = settings.max_ideas_per_site
     site_idea_counts: dict[str, int] = {}
 
-    for article in articles:
-        processed_count += 1
+    with session_scope() as db:
+        for article in articles:
+            processed_count += 1
 
-        site_key = article.source_name
-        if site_idea_counts.get(site_key, 0) >= max_ideas_per_site:
-            trace_entries.append(log_agent_decision(
-                logger, "skip_site_cap", f"Site '{site_key}' already has {max_ideas_per_site} ideas this run",
-                {"article_id": str(article.id), "title": article.title},
-            ))
-            mark_article_processed(supabase, article.id)
-            continue
-
-        try:
-            embed_input = (
-                f"{article.title}. "
-                f"{article.structured_summary.story_narrative if article.structured_summary else ''}"
-            )
-            embedding: list[float] = embed_text(embed_input, embed_client)
-
-            idea_result = generate_ideas(article, anthropic_client, settings.claude_model_heavy, rejection_summary=rejection_summary)
-            sonnet_in += idea_result.input_tokens
-            sonnet_out += idea_result.output_tokens
-
-            if not idea_result.ideas:
+            site_key = article.source_name
+            if site_idea_counts.get(site_key, 0) >= max_ideas_per_site:
                 trace_entries.append(log_agent_decision(
-                    logger, "no_ideas", "generate_ideas returned empty list",
+                    logger, "skip_site_cap", f"Site '{site_key}' already has {max_ideas_per_site} ideas this run",
                     {"article_id": str(article.id), "title": article.title},
                 ))
-                mark_article_processed(supabase, article.id)
+                mark_article_processed(db, article.id)
                 continue
 
-            remaining = max_ideas_per_site - site_idea_counts.get(site_key, 0)
-            capped_ideas = idea_result.ideas[:remaining]
+            try:
+                embed_input = (
+                    f"{article.title}. "
+                    f"{article.structured_summary.story_narrative if article.structured_summary else ''}"
+                )
+                embedding: list[float] = embed_text(embed_input, embed_client)
 
-            final_ideas: list[IdeaCreate] = []
-            for idea in capped_ideas:
-                is_covered = check_recent_coverage(embedding, idea.platform.value, supabase)
-                final_ideas.append(IdeaCreate(**{
-                    **idea.model_dump(),
-                    "recent_coverage_flag": is_covered,
-                    "source_article_id":    article.id,
-                    "source_article_date":  article.publication_date,
-                }))
+                idea_result = generate_ideas(article, anthropic_client, settings.claude_model_heavy, rejection_summary=rejection_summary)
+                sonnet_in += idea_result.input_tokens
+                sonnet_out += idea_result.output_tokens
 
-            created_ids = write_ideas(supabase, final_ideas, article.id, article.publication_date)
-            ideas_created_count += len(created_ids)
-            site_idea_counts[site_key] = site_idea_counts.get(site_key, 0) + len(created_ids)
+                if not idea_result.ideas:
+                    trace_entries.append(log_agent_decision(
+                        logger, "no_ideas", "generate_ideas returned empty list",
+                        {"article_id": str(article.id), "title": article.title},
+                    ))
+                    mark_article_processed(db, article.id)
+                    continue
 
-            if len(created_ids) < len(final_ideas):
-                failure_count += len(final_ideas) - len(created_ids)
+                remaining = max_ideas_per_site - site_idea_counts.get(site_key, 0)
+                capped_ideas = idea_result.ideas[:remaining]
 
-            trace_entries.append(log_agent_decision(
-                logger, "ideas_written", f"{len(created_ids)} ideas stored",
-                {"article_id": str(article.id), "title": article.title, "ideas": len(created_ids)},
-            ))
+                final_ideas: list[IdeaCreate] = []
+                for idea in capped_ideas:
+                    is_covered = check_recent_coverage(embedding, idea.platform.value, db)
+                    final_ideas.append(IdeaCreate(**{
+                        **idea.model_dump(),
+                        "recent_coverage_flag": is_covered,
+                        "source_article_id":    article.id,
+                        "source_article_date":  article.publication_date,
+                    }))
 
-            mark_article_processed(supabase, article.id)
+                created_ids = write_ideas(db, final_ideas, article.id, article.publication_date)
+                ideas_created_count += len(created_ids)
+                site_idea_counts[site_key] = site_idea_counts.get(site_key, 0) + len(created_ids)
 
-        except Exception as exc:
-            logger.error(f"scoring_agent_task: article error | id={article.id} | err={exc}")
-            errors.append({"article_id": str(article.id), "error": str(exc)})
-            failure_count += 1
+                if len(created_ids) < len(final_ideas):
+                    failure_count += len(final_ideas) - len(created_ids)
+
+                trace_entries.append(log_agent_decision(
+                    logger, "ideas_written", f"{len(created_ids)} ideas stored",
+                    {"article_id": str(article.id), "title": article.title, "ideas": len(created_ids)},
+                ))
+
+                mark_article_processed(db, article.id)
+
+            except Exception as exc:
+                logger.error(f"scoring_agent_task: article error | id={article.id} | err={exc}")
+                errors.append({"article_id": str(article.id), "error": str(exc)})
+                failure_count += 1
 
     duration = time.time() - start_time
 
@@ -549,7 +592,7 @@ async def scoring_agent_task(ctx: dict) -> dict:
     total_tokens = sonnet_in + sonnet_out
     token_cost_dict = {"sonnet": sonnet_cost, "total_usd": round(total_usd, 6)}
 
-    await asyncio.to_thread(upsert_cost_log, supabase, "scoring_agent", total_usd=total_usd, token_count=total_tokens)
+    await asyncio.to_thread(_with_db, upsert_cost_log, "scoring_agent", total_usd=total_usd, token_count=total_tokens)
 
     run_log = RunLogCreate(
         agent_name="scoring_agent",
@@ -563,7 +606,7 @@ async def scoring_agent_task(ctx: dict) -> dict:
         token_cost=token_cost_dict,
     )
     try:
-        supabase.table("run_logs").insert(run_log.model_dump()).execute()
+        _with_db(_write_run_log, run_log)
     except Exception as exc:
         logger.error(f"scoring_agent_task: failed to write run_log | err={exc}")
 
@@ -613,7 +656,6 @@ async def creation_agent_task(
     from app.db.models import Idea, DraftCreate, RunLogCreate, TriggerType
 
     settings = ctx["settings"]
-    supabase = ctx["supabase"]
     start_time = time.time()
 
     anthropic_client = AsyncAnthropic(api_key=settings.anthropic_api_key)
@@ -636,13 +678,11 @@ async def creation_agent_task(
 
     if idea_ids:
         try:
-            ideas_resp = (
-                supabase.table("ideas")
-                .select("*")
-                .in_("id", idea_ids)
-                .execute()
-            )
-            ideas_by_id = {str(r["id"]): Idea(**r) for r in (ideas_resp.data or [])}
+            with session_scope() as db:
+                idea_rows = db.execute(
+                    select(IdeaORM).where(IdeaORM.id.in_(idea_ids))
+                ).scalars().all()
+                ideas_by_id = {str(r.id): Idea.model_validate(r, from_attributes=True) for r in idea_rows}
         except Exception as exc:
             logger.error(f"creation_agent_task: failed to batch-fetch ideas | err={exc}")
             return {
@@ -677,19 +717,35 @@ async def creation_agent_task(
         drafted = 0
         failed = 0
 
+        def _set_idea_draft_status(db, idea_id, status, error=""):
+            row = db.get(IdeaORM, idea_id)
+            if row is not None:
+                row.draft_status = status
+                if error:
+                    row.agent_reasoning = error[:500]
+            db.commit()
+
+        def _set_draft_status(status: str, error: str = "") -> None:
+            """Update draft_status on the idea row. Never raises."""
+            try:
+                _with_db(_set_idea_draft_status, idea_id, status, error)
+            except Exception:
+                pass
+
         async with sem:
             try:
                 # Step 2 — Fetch source article context (optional)
                 article_context = ""
                 if idea.source_article_id:
-                    art_resp = (
-                        supabase.table("raw_content")
-                        .select("structured_summary")
-                        .eq("id", str(idea.source_article_id))
-                        .execute()
+                    def _fetch_article_summary(db, article_id):
+                        row = db.get(RawContentORM, article_id)
+                        return row.structured_summary if row is not None else None
+
+                    summary_dict = await asyncio.to_thread(
+                        _with_db, _fetch_article_summary, idea.source_article_id
                     )
-                    if art_resp.data and art_resp.data[0].get("structured_summary"):
-                        s = art_resp.data[0]["structured_summary"]
+                    if summary_dict:
+                        s = summary_dict
                         article_context = (
                             f"Story: {s.get('story_narrative', '')}\n"
                             f"Key data: {', '.join(s.get('key_data_points', []))}\n"
@@ -703,7 +759,9 @@ async def creation_agent_task(
                 embed_input = f"{idea.platform.value}: {idea.edited_angle or idea.angle}"
                 embedding = embed_text(embed_input, embed_client)
                 if embedding:
-                    brand_ctx = get_brand_context(embedding, idea.platform.value, supabase)
+                    brand_ctx = await asyncio.to_thread(
+                        _with_db, lambda db: get_brand_context(embedding, idea.platform.value, db)
+                    )
 
                 # Step 3b — Retrieve KB context if needed
                 kb_context = ""
@@ -720,11 +778,10 @@ async def creation_agent_task(
                         ))
                     else:
                         try:
-                            kb_resp = supabase.rpc(
-                                "match_knowledge_base",
-                                {"query_embedding": embedding, "match_count": 8},
-                            ).execute()
-                            kb_rows = kb_resp.data or []
+                            from app.db.vector_search import match_knowledge_base
+                            kb_rows = await asyncio.to_thread(
+                                _with_db, match_knowledge_base, embedding, 8
+                            )
                             if kb_rows:
                                 kb_context = "\n\n---\n\n".join(r["content"] for r in kb_rows)
                         except Exception as kb_exc:
@@ -746,16 +803,6 @@ async def creation_agent_task(
                 )
                 local_in += gen_result.input_tokens
                 local_out += gen_result.output_tokens
-
-                def _set_draft_status(status: str, error: str = "") -> None:
-                    """Update draft_status on the idea row. Never raises."""
-                    try:
-                        update = {"draft_status": status}
-                        if error:
-                            update["agent_reasoning"] = error[:500]
-                        supabase.table("ideas").update(update).eq("id", idea_id).execute()
-                    except Exception:
-                        pass
 
                 if gen_result.draft_create is None:
                     local_traces.append(log_agent_decision(
@@ -797,7 +844,7 @@ async def creation_agent_task(
                 })
 
                 # Step 8 — Write draft to DB
-                draft_id = write_draft(supabase, draft_with_flags)
+                draft_id = await asyncio.to_thread(_with_db, write_draft, draft_with_flags)
                 if draft_id:
                     drafted += 1
                     _set_draft_status("done")
@@ -817,12 +864,7 @@ async def creation_agent_task(
                 logger.error(f"creation_agent_task: idea error | id={idea_id} | err={exc}")
                 local_errors.append({"idea_id": idea_id, "error": str(exc)})
                 failed += 1
-                try:
-                    supabase.table("ideas").update(
-                        {"draft_status": "failed", "agent_reasoning": str(exc)[:500]}
-                    ).eq("id", idea_id).execute()
-                except Exception:
-                    pass
+                _set_draft_status("failed", str(exc))
 
         return drafted, failed, local_in, local_out, local_errors, local_traces
 
@@ -853,7 +895,7 @@ async def creation_agent_task(
     total_tokens = sonnet_in + sonnet_out
     token_cost_dict = {"sonnet": sonnet_cost, "total_usd": round(total_usd, 6)}
 
-    await asyncio.to_thread(upsert_cost_log, supabase, "creation_agent", total_usd=total_usd, token_count=total_tokens)
+    await asyncio.to_thread(_with_db, upsert_cost_log, "creation_agent", total_usd=total_usd, token_count=total_tokens)
 
     run_log = RunLogCreate(
         agent_name="creation_agent",
@@ -867,7 +909,7 @@ async def creation_agent_task(
         token_cost=token_cost_dict,
     )
     try:
-        supabase.table("run_logs").insert(run_log.model_dump()).execute()
+        _with_db(_write_run_log, run_log)
     except Exception as exc:
         logger.error(f"creation_agent_task: failed to write run_log | err={exc}")
 
@@ -958,7 +1000,6 @@ async def publishing_agent_task(ctx: dict) -> dict:
     from app.db.models import Draft, RunLogCreate, TriggerType
 
     settings = ctx["settings"]
-    supabase = ctx["supabase"]
     arq_pool = ctx.get("redis")   # arq injects "redis" key into task ctx
     start_time = time.time()
 
@@ -971,14 +1012,14 @@ async def publishing_agent_task(ctx: dict) -> dict:
     now = datetime.now(timezone.utc)
 
     try:
-        resp = (
-            supabase.table("drafts")
-            .select("*")
-            .eq("approval_status", "approved")
-            .lte("scheduled_at", now.isoformat())
-            .execute()
-        )
-        drafts = [Draft(**d) for d in (resp.data or [])]
+        with session_scope() as db:
+            draft_rows = db.execute(
+                select(DraftORM).where(
+                    DraftORM.approval_status == "approved",
+                    DraftORM.scheduled_at <= now,
+                )
+            ).scalars().all()
+            drafts = [Draft.model_validate(d, from_attributes=True) for d in draft_rows]
     except Exception as exc:
         logger.error(f"publishing_agent_task: failed to fetch drafts | err={exc}")
         return {
@@ -1001,17 +1042,17 @@ async def publishing_agent_task(ctx: dict) -> dict:
                 continue
 
             # Step 2 — Record in published_posts
-            post_id = write_published_post(supabase, draft.platform.value, post_identifier, draft.id)
+            post_id = _with_db(write_published_post, draft.platform.value, post_identifier, draft.id)
             if post_id is None:
                 failure_count += 1
                 errors.append({"draft_id": str(draft.id), "error": "write_published_post failed"})
                 continue
 
             # Step 3 — Update draft status to published
-            update_draft_published(supabase, draft.id)
+            _with_db(update_draft_published, draft.id)
 
             # Step 4 — Schedule analytics jobs (24h, 72h, 7d)
-            if arq_pool is not None:
+            if settings.analytics_enabled and arq_pool is not None:
                 for period, hours in [("24h", 24), ("72h", 72), ("7d", 168)]:
                     await arq_pool.enqueue_job(
                         "analytics_agent_task",
@@ -1045,7 +1086,7 @@ async def publishing_agent_task(ctx: dict) -> dict:
         token_cost={"total_usd": 0.0},
     )
     try:
-        supabase.table("run_logs").insert(run_log.model_dump()).execute()
+        _with_db(_write_run_log, run_log)
     except Exception as exc:
         logger.error(f"publishing_agent_task: failed to write run_log | err={exc}")
 
@@ -1081,28 +1122,35 @@ async def analytics_agent_task(
     from app.utils.logging import log_agent_decision
     from app.db.models import PublishedPost, RunLogCreate, TriggerType
 
-    settings = ctx["settings"]
-    supabase = ctx["supabase"]
     start_time = time.time()
+
+    if not ctx["settings"].analytics_enabled:
+        logger.info(
+            f"analytics_agent_task: skipped (ANALYTICS_ENABLED=false) | "
+            f"post_id={post_id} period={measurement_period}"
+        )
+        return {
+            "status": "skipped",
+            "post_id": post_id,
+            "measurement_period": measurement_period,
+            "duration_seconds": round(time.time() - start_time, 2),
+            "reason": "analytics disabled — metrics_fetcher.py is still a stub",
+        }
 
     # Fetch the published post record
     try:
-        resp = (
-            supabase.table("published_posts")
-            .select("*")
-            .eq("id", post_id)
-            .execute()
-        )
-        if not resp.data:
-            logger.warning(f"analytics_agent_task: post not found | id={post_id}")
-            return {
-                "status": "error",
-                "post_id": post_id,
-                "measurement_period": measurement_period,
-                "duration_seconds": round(time.time() - start_time, 2),
-                "error": "Post not found",
-            }
-        post = PublishedPost.model_construct(**resp.data[0])
+        with session_scope() as db:
+            row = db.get(PublishedPostORM, post_id)
+            if row is None:
+                logger.warning(f"analytics_agent_task: post not found | id={post_id}")
+                return {
+                    "status": "error",
+                    "post_id": post_id,
+                    "measurement_period": measurement_period,
+                    "duration_seconds": round(time.time() - start_time, 2),
+                    "error": "Post not found",
+                }
+            post = PublishedPost.model_validate(row, from_attributes=True)
     except Exception as exc:
         logger.error(f"analytics_agent_task: failed to fetch post | id={post_id} | err={exc}")
         return {
@@ -1120,13 +1168,13 @@ async def analytics_agent_task(
     performance_score = calculate_performance_score(post.platform, metrics)
 
     # Store analytics
-    analytics_id = write_analytics(
-        supabase, post_id, post.platform, measurement_period, metrics, performance_score
+    analytics_id = _with_db(
+        write_analytics, post_id, post.platform, measurement_period, metrics, performance_score
     )
 
     # Update style guide only at 7d mark
     if measurement_period == "7d":
-        update_style_guide(supabase, post.platform, performance_score)
+        _with_db(update_style_guide, post.platform, performance_score)
 
     duration = time.time() - start_time
 
@@ -1146,7 +1194,7 @@ async def analytics_agent_task(
         token_cost={"total_usd": 0.0},
     )
     try:
-        supabase.table("run_logs").insert(run_log.model_dump()).execute()
+        _with_db(_write_run_log, run_log)
     except Exception as exc:
         logger.error(f"analytics_agent_task: failed to write run_log | err={exc}")
 

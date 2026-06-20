@@ -9,40 +9,31 @@ from datetime import datetime
 from typing import Optional
 
 from anthropic import Anthropic
-from supabase import Client
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
+from app.db.orm import Idea, UserDecisionSummary
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 
-def count_unsummarized_rejections(supabase: Client) -> tuple[int, Optional[datetime]]:
+def count_unsummarized_rejections(db: Session) -> tuple[int, Optional[datetime]]:
     """
     Return (count, since_ts) where count is rejections after the last summary
     and since_ts is that summary's timestamp (None if no summary exists yet).
     """
     try:
-        last = (
-            supabase.table("user_decision_summaries")
-            .select("created_at")
-            .order("created_at", desc=True)
-            .limit(1)
-            .execute()
-        )
-        since_ts: Optional[datetime] = None
-        if last.data:
-            since_ts = datetime.fromisoformat(last.data[0]["created_at"])
+        since_ts: Optional[datetime] = db.execute(
+            select(UserDecisionSummary.created_at).order_by(UserDecisionSummary.created_at.desc()).limit(1)
+        ).scalar_one_or_none()
 
-        query = (
-            supabase.table("ideas")
-            .select("id", count="exact")
-            .eq("approval_status", "rejected")
-        )
+        stmt = select(func.count()).select_from(Idea).where(Idea.approval_status == "rejected")
         if since_ts:
-            query = query.gt("updated_at", since_ts.isoformat())
+            stmt = stmt.where(Idea.updated_at > since_ts)
 
-        resp = query.execute()
-        return (resp.count or 0), since_ts
+        count = db.execute(stmt).scalar_one()
+        return count or 0, since_ts
     except Exception as exc:
         logger.warning("count_unsummarized_rejections failed", extra={"error": str(exc)})
         return 0, None
@@ -52,7 +43,7 @@ _MAX_FETCH_LIMIT = 200  # Safety cap so the first-ever run never pulls unbounded
 
 
 def fetch_recent_rejections(
-    supabase: Client,
+    db: Session,
     since_ts: Optional[datetime],
     limit: int,
 ) -> list[dict]:
@@ -63,17 +54,16 @@ def fetch_recent_rejections(
     Claude prompt.
     """
     try:
-        query = (
-            supabase.table("ideas")
-            .select("angle, platform, agent_reasoning")
-            .eq("approval_status", "rejected")
-            .order("updated_at", desc=True)
+        stmt = (
+            select(Idea.angle, Idea.platform, Idea.agent_reasoning)
+            .where(Idea.approval_status == "rejected")
+            .order_by(Idea.updated_at.desc())
             .limit(min(limit, _MAX_FETCH_LIMIT))
         )
         if since_ts:
-            query = query.gt("updated_at", since_ts.isoformat())
-        resp = query.execute()
-        return resp.data or []
+            stmt = stmt.where(Idea.updated_at > since_ts)
+        rows = db.execute(stmt).all()
+        return [{"angle": r.angle, "platform": r.platform, "agent_reasoning": r.agent_reasoning} for r in rows]
     except Exception as exc:
         logger.warning("fetch_recent_rejections failed", extra={"error": str(exc)})
         return []
@@ -122,14 +112,13 @@ def generate_decision_summary(
         return ""
 
 
-def write_summary(supabase: Client, summary_text: str, rejection_count: int) -> None:
+def write_summary(db: Session, summary_text: str, rejection_count: int) -> None:
     """Insert a row into user_decision_summaries. Never raises."""
     if not summary_text:
         return
     try:
-        supabase.table("user_decision_summaries").insert({
-            "summary_text": summary_text,
-            "rejection_count": rejection_count,
-        }).execute()
+        db.add(UserDecisionSummary(summary_text=summary_text, rejection_count=rejection_count))
+        db.commit()
     except Exception as exc:
+        db.rollback()
         logger.warning("write_summary failed", extra={"error": str(exc)})

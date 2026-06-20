@@ -14,7 +14,7 @@ AI-powered content pipeline for **Growthvine Capital** (Indian wealth-management
 | LLM | Anthropic Claude — Sonnet (generation) + Haiku (scoring) |
 | Orchestrator | LangGraph ReAct agent (30+ tools) |
 | Embeddings | Gemini text-embedding-004 (768-dim) → fastembed BGE fallback |
-| DB | PostgreSQL + pgvector (self-hosted). Supabase client still present — migration in progress |
+| DB | PostgreSQL + pgvector (self-hosted), Alembic migrations. Supabase client retained only for the one-time `scripts/migrate_from_supabase.py` |
 | Scraping | Playwright (Microsoft Edge channel) |
 | Web search | Tavily → DuckDuckGo fallback |
 | Frontend | Next.js 14 App Router + Tailwind + SWR (port 3000) |
@@ -38,11 +38,13 @@ AI-powered content pipeline for **Growthvine Capital** (Indian wealth-management
 
   ⏸ GATE 2 — human approves/rejects drafts via /drafts
 
-[Publishing]    Every 15 min cron
+[Publishing]    Cron DISABLED for now (poster.py is still a stub — no real
+                platform posting). Trigger manually via arq once posting is real.
   Post approved drafts where scheduled_at <= now() → published_posts → schedule analytics
 
-[Analytics]     Deferred at +24h / +72h / +7d from publish
-  Fetch metrics → performance_score → update style_guide at 7d mark
+[Analytics]     DISABLED by default (ANALYTICS_ENABLED=false) — metrics_fetcher.py
+                still returns random stub data, nothing real to measure yet.
+  Deferred at +24h / +72h / +7d from publish → fetch metrics → performance_score → update style_guide at 7d mark
 
 [Orchestrator]  Always-on conversational agent
   Chat interface to control entire pipeline (trigger, approve, generate, search, manage KB/sites)
@@ -71,6 +73,13 @@ cd frontend && npm run dev
 
 # Full stack
 docker compose up --build
+
+# Schema migrations
+cd backend && alembic upgrade head
+
+# Tests (needs a Postgres reachable at DATABASE_URL with "test" in its db name —
+# the test suite truncates every table before each test)
+cd backend && pytest tests -v
 ```
 
 ---
@@ -106,7 +115,7 @@ docker compose up --build
 
 `curated_sites`, `raw_content`, `ideas`, `drafts`, `published_posts`, `content_analytics`, `style_guide`, `brand_memory` (768-dim vectors), `knowledge_base` (768-dim vectors), `user_decision_summaries`, `topic_performance_model`, `email_subscribers`, `run_logs`, `cost_log`
 
-Migrations: `backend/app/db/migrations/001–005` (raw SQL, no Alembic)
+Migrations: Alembic (`backend/alembic/versions/`). `backend/app/db/migrations/001–005` are historical hand-written SQL from before Alembic — kept for the record, not re-runnable, see `app/db/migrations/README.md`.
 
 ---
 
@@ -118,27 +127,31 @@ ANTHROPIC_API_KEY=sk-ant-...
 REDIS_URL=redis://localhost:6379
 
 # Optional but needed for full function
-SUPABASE_URL=...                  # legacy — migration in progress
+SUPABASE_URL=...                  # legacy — only used by scripts/migrate_from_supabase.py
 SUPABASE_SERVICE_ROLE_KEY=...     # legacy
 GOOGLE_API_KEY=...                # Gemini embeddings (falls back to fastembed)
 TAVILY_API_KEY=...                # web search (falls back to DuckDuckGo)
 SLACK_WEBHOOK_URL=...             # cost alerts
-BACKEND_API_KEY=...               # shared secret for frontend proxy
+API_KEY=...                       # backend's own auth guard (X-Api-Key header)
+ANALYTICS_ENABLED=false           # metrics_fetcher.py is a stub — leave off until it's real
 
 # Model selection
 CLAUDE_MODEL_HEAVY=claude-sonnet-4-6
 CLAUDE_MODEL_LIGHT=claude-haiku-4-5-20251001
 ```
 
+Frontend's `BACKEND_API_KEY` (in `frontend/.env.local`) must exactly match
+backend's `API_KEY` above, or the frontend proxy 403s on every request. See
+`backend/.env.example` and `frontend/.env.example`.
+
 ---
 
-## Active Migration: Supabase → Self-Hosted Postgres
+## Migration: Supabase → Self-Hosted Postgres
 
-**Status:** In progress. Both systems coexist.
-- New code: SQLAlchemy ORM (`app/db/orm.py`, `app/db/session.py`)
-- Old code: ~27 Supabase client imports still throughout backend
-- `seed.py` still writes to Supabase; `init_db.py` targets Postgres
-- Do NOT assume a route uses SQLAlchemy — check which client it imports
+**Status:** Done. Every agent, router, and queue task runs on SQLAlchemy ORM
+(`app/db/orm.py`, `app/db/session.py`). The `supabase` client (`app/db/client.py`)
+is retained only for `scripts/migrate_from_supabase.py`, the one-time data
+export script — nothing else imports it.
 
 ---
 
@@ -153,15 +166,20 @@ CLAUDE_MODEL_LIGHT=claude-haiku-4-5-20251001
 | Analytics metrics | `analytics/metrics_fetcher.py` | Returns random mock data |
 | Reddit scraping | `research/reddit_scraper.py` | Dead code stub |
 
+Because posting is fake, the publishing cron is disabled (`app/queue/worker.py`,
+`app/queue/publishing_worker.py`) and analytics is off by default
+(`ANALYTICS_ENABLED=false`) — re-enable both once real platform posting exists.
+
 ---
 
 ## Known Issues
 
-1. **Zero test coverage** — `backend/tests/` has mock infra but no test cases
-2. **Supabase→Postgres migration incomplete** — dual-stack, risk of divergent writes
-3. **`backend/package.json` typo** — `"srw": "^0.0.4"` (not a real package), breaks Docker npm ci
-4. **`BACKEND_API_KEY` undocumented** — not in docker-compose.yml, causes 403s from frontend
-5. **Stale model IDs in `.env.example`** — defaults to `claude-sonnet-4-5`, use `4-6`
-6. **No CI/CD** — no GitHub Actions, all deploys manual
-7. **No Alembic** — SQL migrations managed manually, no rollback support
-8. **Broad `except Exception`** — throughout agents, swallows unexpected failures
+1. **Broad `except Exception`** — throughout agents, swallows unexpected failures
+2. **Terraform written, not applied** — `infra/terraform/` has EC2/ECR/OIDC defined and
+   `terraform plan` reviewed, but no `.tfstate` exists yet; nothing is deployed to AWS
+3. **Publishing/analytics are stubs** — see "What's Stubbed" above; both are disabled
+   by default rather than fixed, since real platform API integration is its own project
+4. **Test coverage is a start, not exhaustive** — `backend/tests/` covers the
+   research filters/extractor/scraper, embedding fallback logic, and the
+   ideas router (incl. sibling-discard on approval). Scoring/creation/drafts/
+   orchestrator agents have no tests yet.

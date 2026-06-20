@@ -37,9 +37,7 @@ async def startup(ctx: dict) -> None:
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
 
-    from app.db.client import get_supabase_client
     from app.config import get_settings
-    ctx["supabase"] = get_supabase_client()
     ctx["settings"] = get_settings()
 
 
@@ -65,6 +63,7 @@ class WorkerSettings:
     cron_jobs = [
         # 6:00 AM IST = 00:30 UTC
         cron(research_agent_task, hour=0, minute=30),
-        # Publishing queue check every 15 minutes
-        cron(publishing_agent_task, minute={0, 15, 30, 45}),
+        # Publishing cron disabled — poster.py is stubbed (no real platform posting yet).
+        # Trigger publishing_agent_task manually via /trigger/publishing once real
+        # posting is implemented.
     ]

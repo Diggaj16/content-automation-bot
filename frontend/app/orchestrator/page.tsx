@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { orchestrate, type OrchestratorResponse } from "../lib/api";
+import { orchestrate } from "../lib/api";
 
 interface Message {
   role: "user" | "assistant";

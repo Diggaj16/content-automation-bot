@@ -48,3 +48,12 @@ docs/
 learning_pdfs/
 generate_pdfs.py
 generate_deep_pdfs.py
+
+# Terraform — state/vars can contain account IDs, secrets; never commit.
+# .terraform.lock.hcl IS committed (pins provider versions).
+infra/terraform/.terraform/
+infra/terraform/*.tfstate
+infra/terraform/*.tfstate.*
+infra/terraform/*.tfvars
+infra/terraform/crash.log
+infra/terraform/tfplan

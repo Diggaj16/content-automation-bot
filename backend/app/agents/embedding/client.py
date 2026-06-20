@@ -48,8 +48,9 @@ class EmbedClient(ABC):
 
 class GeminiEmbedder(EmbedClient):
     """
-    Google text-embedding-004 (768 dims by default) via the google-genai SDK.
-    Free tier: 1500 requests/day. Paid: $0.025/1M tokens.
+    Google gemini-embedding-001 (768 dims via output_dimensionality) via the
+    google-genai SDK. text-embedding-004 (the older model) was retired and is
+    no longer served — gemini-embedding-001 is the current replacement.
     Supports batches up to 100 texts per request.
     """
 
@@ -69,7 +70,7 @@ class GeminiEmbedder(EmbedClient):
             chunk = texts[i : i + self._CHUNK_SIZE]
             try:
                 result = self._client.models.embed_content(
-                    model="models/text-embedding-004",
+                    model="models/gemini-embedding-001",
                     contents=chunk,
                     config={
                         "task_type": task_type,

@@ -1,19 +1,19 @@
 """
 Recent brand coverage checker for the scoring agent.
 
-Calls the Postgres RPC function `check_recent_brand_coverage` to detect whether
-similar content has already been published by the brand on a given platform within
-the last N days. Returns True if similar content was found (flag the idea),
-False otherwise.
+Checks whether similar content has already been published by the brand on a
+given platform within the last N days, via pgvector cosine similarity.
+Returns True if similar content was found (flag the idea), False otherwise.
 
 Usage:
     from app.agents.scoring.coverage_checker import check_recent_coverage
-    already_covered = check_recent_coverage(embedding, platform.value, supabase)
+    already_covered = check_recent_coverage(embedding, platform.value, db)
 """
 from __future__ import annotations
 
-from supabase import Client
+from sqlalchemy.orm import Session
 
+from app.db.vector_search import check_recent_brand_coverage
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -22,7 +22,7 @@ logger = get_logger(__name__)
 def check_recent_coverage(
     embedding: list[float],
     platform: str,
-    supabase: Client,
+    db: Session,
     *,
     days_back: int = 30,
     threshold: float = 0.85,
@@ -40,16 +40,14 @@ def check_recent_coverage(
         return False
 
     try:
-        resp = supabase.rpc(
-            "check_recent_brand_coverage",
-            {
-                "topic_embedding":      embedding,
-                "platform_filter":      platform,
-                "days_back":            days_back,
-                "similarity_threshold": threshold,
-            },
-        ).execute()
-        return bool(resp.data)
+        rows = check_recent_brand_coverage(
+            db,
+            topic_embedding=embedding,
+            platform_filter=platform,
+            similarity_threshold=threshold,
+            days_back=days_back,
+        )
+        return bool(rows)
     except Exception as exc:
         logger.warning(
             "check_recent_coverage failed",

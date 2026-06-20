@@ -6,8 +6,6 @@ import {
   getStatus,
   triggerResearch,
   triggerScoring,
-  type RunLog,
-  type CostLog,
 } from "./lib/api";
 import { useJobStatus } from "./hooks/useJobStatus";
 import JobStatusBadge from "./components/JobStatusBadge";

@@ -15,9 +15,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import BaseModel, Field
 
-from app.api.deps import get_supabase, get_settings
+from app.api.deps import get_settings
 from app.config import Settings
-from supabase import Client
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -44,7 +43,7 @@ def _settings_fingerprint(settings: Settings) -> str:
     return f"{settings.anthropic_api_key}|{settings.tavily_api_key}|{settings.orchestrator_model}"
 
 
-async def _get_or_build_agent(request: Request, supabase: Client, settings: Settings):
+async def _get_or_build_agent(request: Request, settings: Settings):
     """Return cached orchestrator agent, building (or rebuilding) as needed.
 
     Rebuilds automatically when API keys or the model change so a server
@@ -64,7 +63,6 @@ async def _get_or_build_agent(request: Request, supabase: Client, settings: Sett
                 from app.agents.orchestrator.agent import build_orchestrator_agent
                 arq_pool = getattr(request.app.state, "arq_pool", None)
                 request.app.state.orchestrator_agent = build_orchestrator_agent(
-                    supabase=supabase,
                     arq_pool=arq_pool,
                     anthropic_api_key=settings.anthropic_api_key,
                     model=settings.orchestrator_model,
@@ -85,14 +83,13 @@ async def _get_or_build_agent(request: Request, supabase: Client, settings: Sett
 async def orchestrate(
     body: OrchestratorRequest,
     request: Request,
-    supabase: Client = Depends(get_supabase),
     settings: Settings = Depends(get_settings),
 ) -> OrchestratorResponse:
     """Send a message to the orchestrator and get a response."""
     if not body.message.strip():
         raise HTTPException(status_code=422, detail="message must not be empty")
 
-    agent = await _get_or_build_agent(request, supabase, settings)
+    agent = await _get_or_build_agent(request, settings)
 
     try:
         result = await agent.ainvoke(

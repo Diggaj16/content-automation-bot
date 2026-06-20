@@ -16,9 +16,11 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, field_validator
-from supabase import Client
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from app.api.deps import get_supabase
+from app.api.deps import get_db
+from app.db.orm import EmailSubscriber
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -44,19 +46,32 @@ class SubscriberUpdate(BaseModel):
     active: Optional[bool] = None
 
 
+def _sub_to_dict(sub: EmailSubscriber, include_token: bool = False) -> dict:
+    d = {
+        "id": str(sub.id),
+        "email": sub.email,
+        "name": sub.name,
+        "subscribed_date": sub.subscribed_date,
+        "source": sub.source,
+        "active": sub.active,
+        "created_at": sub.created_at,
+    }
+    if include_token:
+        d["unsubscribe_token"] = sub.unsubscribe_token
+    return d
+
+
 @router.get("/subscribers")
 def list_subscribers(
     active: Optional[bool] = Query(None),
-    supabase: Client = Depends(get_supabase),
+    db: Session = Depends(get_db),
 ) -> list[dict]:
     try:
-        q = supabase.table("email_subscribers").select(
-            "id, email, name, subscribed_date, source, active, created_at"
-        )
+        stmt = select(EmailSubscriber)
         if active is not None:
-            q = q.eq("active", active)
-        resp = q.execute()
-        return resp.data or []
+            stmt = stmt.where(EmailSubscriber.active == active)
+        rows = db.execute(stmt).scalars().all()
+        return [_sub_to_dict(r) for r in rows]
     except Exception as exc:
         logger.warning("list_subscribers failed", extra={"error": str(exc)})
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -65,17 +80,14 @@ def list_subscribers(
 @router.post("/subscribers", status_code=201)
 def add_subscriber(
     body: SubscriberCreate,
-    supabase: Client = Depends(get_supabase),
+    db: Session = Depends(get_db),
 ) -> dict:
     # Check for duplicate
     try:
-        existing = (
-            supabase.table("email_subscribers")
-            .select("id")
-            .eq("email", body.email)
-            .execute()
-        )
-        if existing.data:
+        existing = db.execute(
+            select(EmailSubscriber.id).where(EmailSubscriber.email == body.email)
+        ).first()
+        if existing:
             raise HTTPException(status_code=409, detail="Email already subscribed")
     except HTTPException:
         raise
@@ -84,21 +96,18 @@ def add_subscriber(
         raise HTTPException(status_code=500, detail="Internal server error")
 
     try:
-        payload: dict = {
-            "email": body.email,
-            "unsubscribe_token": str(uuid.uuid4()),
-        }
-        if body.name:
-            payload["name"] = body.name
-        resp = supabase.table("email_subscribers").insert(payload).execute()
-        if not resp.data:
-            raise HTTPException(status_code=500, detail="Insert returned no data")
-        row = resp.data[0]
-        row.pop("unsubscribe_token", None)
-        return row
+        row = EmailSubscriber(
+            email=body.email,
+            name=body.name or None,
+            unsubscribe_token=str(uuid.uuid4()),
+        )
+        db.add(row)
+        db.commit()
+        return _sub_to_dict(row)
     except HTTPException:
         raise
     except Exception as exc:
+        db.rollback()
         logger.warning("add_subscriber: insert failed", extra={"error": str(exc)})
         raise HTTPException(status_code=500, detail="Internal server error")
 
@@ -107,28 +116,24 @@ def add_subscriber(
 def update_subscriber(
     sub_id: UUID,
     body: SubscriberUpdate,
-    supabase: Client = Depends(get_supabase),
+    db: Session = Depends(get_db),
 ) -> dict:
-    update: dict = {}
-    if body.name is not None:
-        update["name"] = body.name
-    if body.active is not None:
-        update["active"] = body.active
-    if not update:
+    if body.name is None and body.active is None:
         raise HTTPException(status_code=422, detail="Nothing to update")
     try:
-        resp = (
-            supabase.table("email_subscribers")
-            .update(update)
-            .eq("id", str(sub_id))
-            .execute()
-        )
-        if not resp.data:
+        sub = db.get(EmailSubscriber, sub_id)
+        if sub is None:
             raise HTTPException(status_code=404, detail="Subscriber not found")
-        return resp.data[0]
+        if body.name is not None:
+            sub.name = body.name
+        if body.active is not None:
+            sub.active = body.active
+        db.commit()
+        return _sub_to_dict(sub)
     except HTTPException:
         raise
     except Exception as exc:
+        db.rollback()
         logger.warning("update_subscriber failed", extra={"sub_id": str(sub_id), "error": str(exc)})
         raise HTTPException(status_code=500, detail="Internal server error")
 
@@ -136,21 +141,19 @@ def update_subscriber(
 @router.delete("/subscribers/{sub_id}")
 def delete_subscriber(
     sub_id: UUID,
-    supabase: Client = Depends(get_supabase),
+    db: Session = Depends(get_db),
 ) -> dict:
     try:
-        resp = (
-            supabase.table("email_subscribers")
-            .update({"active": False})
-            .eq("id", str(sub_id))
-            .execute()
-        )
-        if not resp.data:
+        sub = db.get(EmailSubscriber, sub_id)
+        if sub is None:
             raise HTTPException(status_code=404, detail="Subscriber not found")
+        sub.active = False
+        db.commit()
         return {"deleted": True, "id": str(sub_id)}
     except HTTPException:
         raise
     except Exception as exc:
+        db.rollback()
         logger.warning("delete_subscriber failed", extra={"sub_id": str(sub_id), "error": str(exc)})
         raise HTTPException(status_code=500, detail="Internal server error")
 
@@ -158,35 +161,33 @@ def delete_subscriber(
 @router.get("/unsubscribe", response_class=HTMLResponse)
 def unsubscribe(
     token: str = Query(...),
-    supabase: Client = Depends(get_supabase),
+    db: Session = Depends(get_db),
 ) -> HTMLResponse:
     try:
-        resp = (
-            supabase.table("email_subscribers")
-            .select("id, email")
-            .eq("unsubscribe_token", token)
-            .execute()
-        )
+        sub = db.execute(
+            select(EmailSubscriber).where(EmailSubscriber.unsubscribe_token == token)
+        ).scalar_one_or_none()
     except Exception as exc:
         logger.warning("unsubscribe: lookup failed", extra={"error": str(exc)})
         raise HTTPException(status_code=500, detail="Internal server error")
 
-    if not resp.data:
+    if sub is None:
         return HTMLResponse(
             content=_html("Not Found", "This unsubscribe link is invalid or has already been used."),
             status_code=404,
         )
 
-    sub = resp.data[0]
     try:
-        supabase.table("email_subscribers").update({"active": False}).eq("id", sub["id"]).execute()
+        sub.active = False
+        db.commit()
     except Exception as exc:
-        logger.warning("unsubscribe: failed to deactivate subscriber", extra={"error": str(exc), "id": sub["id"]})
+        db.rollback()
+        logger.warning("unsubscribe: failed to deactivate subscriber", extra={"error": str(exc), "id": str(sub.id)})
 
     return HTMLResponse(
         content=_html(
             "Unsubscribed",
-            f"<strong>{_html_module.escape(sub['email'])}</strong> has been unsubscribed from all future emails.",
+            f"<strong>{_html_module.escape(sub.email)}</strong> has been unsubscribed from all future emails.",
         ),
         status_code=200,
     )

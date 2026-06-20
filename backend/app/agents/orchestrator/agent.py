@@ -2,7 +2,7 @@
 Builds the LangGraph ReAct orchestrator agent.
 
 Usage:
-    agent = build_orchestrator_agent(supabase, arq_pool, api_key, model)
+    agent = build_orchestrator_agent(arq_pool, api_key, model)
     result = await agent.ainvoke(
         {"messages": [{"role": "user", "content": "How many pending ideas?"}]},
         config={"configurable": {"thread_id": "session-abc"}},
@@ -12,7 +12,6 @@ Usage:
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import create_react_agent
 from langchain_anthropic import ChatAnthropic
-from supabase import Client
 
 from app.agents.orchestrator.tools import make_tools
 from app.utils.logging import get_logger
@@ -102,7 +101,6 @@ If you need to check information first without generating, use search_web or sea
 
 
 def build_orchestrator_agent(
-    supabase: Client,
     arq_pool,
     anthropic_api_key: str,
     model: str = "claude-sonnet-4-5",
@@ -115,7 +113,6 @@ def build_orchestrator_agent(
     called concurrently with different thread_id values in the config.
     """
     tools = make_tools(
-        supabase=supabase,
         arq_pool=arq_pool,
         tavily_api_key=tavily_api_key,
         anthropic_api_key=anthropic_api_key,

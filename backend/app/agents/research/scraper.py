@@ -17,11 +17,10 @@ from urllib.parse import urlparse
 from playwright.async_api import async_playwright, Browser
 from pydantic import BaseModel
 
+from app.agents.research.extractor import BROWSER_ARGS, BROWSER_CHANNEL, USER_AGENT
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
-
-from app.agents.research.extractor import BROWSER_ARGS, BROWSER_CHANNEL, USER_AGENT
 
 # Dismisses cookie banners, login modals, and subscription overlays common on
 # Indian news sites (MoneyControl, ET, Financial Express, etc.).

@@ -7,11 +7,12 @@ Embedding is optional; pass embed_client=None to skip (chunks stored without vec
 from __future__ import annotations
 
 import io
-from typing import Optional
 
 import pdfplumber
-from supabase import Client
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.orm import Session
 
+from app.db.orm import KnowledgeBase
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -85,7 +86,7 @@ def ingest_file(
     filename: str,
     text: str,
     embed_client,
-    supabase: Client,
+    db: Session,
 ) -> int:
     """
     Chunk text, batch-embed all chunks in a single API call, then upsert.
@@ -93,7 +94,7 @@ def ingest_file(
     Returns the number of chunks written.
     Embedding is skipped if embed_client is None — chunks are stored without vectors.
     """
-    from app.agents.embedding.client import EmbedClient, NoOpEmbedder
+    from app.agents.embedding.client import NoOpEmbedder
 
     chunks = chunk_text(text)
     if not chunks:
@@ -120,14 +121,16 @@ def ingest_file(
             row["embedding"] = embeddings[idx]
 
         try:
-            resp = (
-                supabase.table("knowledge_base")
-                .upsert(row, on_conflict="source_file,chunk_index")
-                .execute()
+            stmt = (
+                pg_insert(KnowledgeBase)
+                .values(**row)
+                .on_conflict_do_update(index_elements=["source_file", "chunk_index"], set_=row)
             )
-            if resp.data:
-                written += 1
+            db.execute(stmt)
+            db.commit()
+            written += 1
         except Exception as exc:
+            db.rollback()
             logger.warning("kb_ingester: upsert failed for chunk",
                            extra={"chunk_idx": idx, "error": str(exc)})
 

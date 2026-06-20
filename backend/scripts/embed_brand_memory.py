@@ -18,42 +18,52 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from sqlalchemy import select
+
 from app.config import get_settings
-from app.db.client import get_supabase_client
+from app.db.orm import BrandMemory
+from app.db.session import session_scope
 from app.agents.embedding.client import make_embed_client
 
 
 def main() -> None:
     settings = get_settings()
-    db = get_supabase_client()
     client = make_embed_client(
         google_api_key=settings.google_api_key,
         local_model=settings.local_embedding_model,
     )
 
-    rows = db.table("brand_memory").select("id,content,embedding").execute().data or []
-    pending = [r for r in rows if not r.get("embedding") and (r.get("content") or "").strip()]
-    print(f"brand_memory: {len(rows)} total, {len(pending)} need embedding")
+    with session_scope() as db:
+        total = db.execute(select(BrandMemory)).scalars().all()
+        pending = [
+            r for r in db.execute(
+                select(BrandMemory).where(BrandMemory.embedding.is_(None))
+            ).scalars().all()
+            if (r.content or "").strip()
+        ]
+        print(f"brand_memory: {len(total)} total, {len(pending)} need embedding")
 
-    if not pending:
-        print("Nothing to backfill. Done.")
-        return
+        if not pending:
+            print("Nothing to backfill. Done.")
+            return
 
-    # Batch-embed all pending contents in one call (document vectors, for_query=False)
-    texts = [r["content"] for r in pending]
-    vectors = client.embed(texts, for_query=False)
+        # Batch-embed all pending contents in one call (document vectors, for_query=False)
+        texts = [r.content for r in pending]
+        vectors = client.embed(texts, for_query=False)
 
-    updated = 0
-    for row, vec in zip(pending, vectors):
-        if not vec:
-            print(f"  SKIP {row['id']}: embedding returned empty")
-            continue
-        try:
-            db.table("brand_memory").update({"embedding": vec}).eq("id", row["id"]).execute()
-            updated += 1
-            print(f"  OK   {row['id']}  ({len(vec)}-dim)  {row['content'][:50]!r}")
-        except Exception as exc:
-            print(f"  FAIL {row['id']}: {exc}")
+        updated = 0
+        for row, vec in zip(pending, vectors):
+            if not vec:
+                print(f"  SKIP {row.id}: embedding returned empty")
+                continue
+            try:
+                row.embedding = vec
+                db.commit()
+                updated += 1
+                print(f"  OK   {row.id}  ({len(vec)}-dim)  {row.content[:50]!r}")
+            except Exception as exc:
+                db.rollback()
+                print(f"  FAIL {row.id}: {exc}")
 
     print(f"\nBackfill complete. {updated}/{len(pending)} rows embedded.")
 

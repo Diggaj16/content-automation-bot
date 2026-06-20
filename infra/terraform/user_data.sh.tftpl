@@ -1,0 +1,28 @@
+#!/bin/bash
+set -euxo pipefail
+
+apt-get update -y
+apt-get install -y ca-certificates curl gnupg unzip
+
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+chmod a+r /etc/apt/keyrings/docker.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+  > /etc/apt/sources.list.d/docker.list
+apt-get update -y
+apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+systemctl enable --now docker
+
+curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+unzip -q /tmp/awscliv2.zip -d /tmp
+/tmp/aws/install
+rm -rf /tmp/awscliv2.zip /tmp/aws
+
+mkdir -p ${deploy_dir}
+cat > ${deploy_dir}/docker-compose.prod.yml <<'COMPOSE_EOF'
+${compose}
+COMPOSE_EOF
+
+# backend.env / frontend.env are NOT created here — they hold secrets and are
+# provisioned once by hand (see infra/README.md), never by Terraform or CI.
+touch ${deploy_dir}/backend.env ${deploy_dir}/frontend.env

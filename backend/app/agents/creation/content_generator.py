@@ -6,12 +6,12 @@ the source article context, and past brand content examples.
 """
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 from anthropic import Anthropic, AsyncAnthropic
 
-from app.db.models import DraftCreate, Idea, Platform
+from app.db.models import DraftCreate, Idea
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)

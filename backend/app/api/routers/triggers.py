@@ -8,11 +8,12 @@ GET  /status            — recent run_logs + daily cost summary
 """
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
-from supabase import Client
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from app.api.deps import get_arq_pool, get_supabase
-from app.db.client import get_supabase_client_fresh
+from app.api.deps import get_arq_pool, get_db
 from app.db.models import ContentType
+from app.db.orm import CostLog, RunLog
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -101,42 +102,27 @@ async def get_job_status(job_id: str, request: Request) -> dict:
     return {"job_id": job_id, "status": status.value, "result": result}
 
 
-def _fetch_status(supabase: Client, limit: int) -> dict:
-    """Execute the two status queries. Extracted so the caller can retry with a fresh client."""
-    logs_resp = (
-        supabase.table("run_logs")
-        .select("*")
-        .order("created_at", desc=True)
-        .limit(limit)
-        .execute()
-    )
-    cost_resp = (
-        supabase.table("cost_log")
-        .select("*")
-        .order("date", desc=True)
-        .limit(30)
-        .execute()
-    )
-    return {
-        "recent_runs": logs_resp.data or [],
-        "cost_log": cost_resp.data or [],
-    }
+def _row_to_dict(model, row) -> dict:
+    return {c.name: getattr(row, c.name) for c in model.__table__.columns}
 
 
 @router.get("/status")
 def get_status(
     limit: int = Query(default=10, ge=1, le=100),
-    supabase: Client = Depends(get_supabase),
+    db: Session = Depends(get_db),
 ) -> dict:
     """Return recent agent run logs and the daily cost summary."""
     try:
-        return _fetch_status(supabase, limit)
+        logs = db.execute(
+            select(RunLog).order_by(RunLog.created_at.desc()).limit(limit)
+        ).scalars().all()
+        costs = db.execute(
+            select(CostLog).order_by(CostLog.date.desc()).limit(30)
+        ).scalars().all()
+        return {
+            "recent_runs": [_row_to_dict(RunLog, r) for r in logs],
+            "cost_log": [_row_to_dict(CostLog, r) for r in costs],
+        }
     except Exception as exc:
-        logger.warning("triggers: status query failed, retrying with fresh connection",
-                       extra={"error": str(exc)})
-        # Stale httpx connection pool — reset singleton and retry once
-        try:
-            return _fetch_status(get_supabase_client_fresh(), limit)
-        except Exception as exc2:
-            logger.warning("triggers router error", extra={"error": str(exc2)})
-            raise HTTPException(status_code=500, detail="Internal server error")
+        logger.warning("triggers router error", extra={"error": str(exc)})
+        raise HTTPException(status_code=500, detail="Internal server error")

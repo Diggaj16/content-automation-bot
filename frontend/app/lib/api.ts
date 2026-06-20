@@ -30,7 +30,9 @@ export async function approveIdea(
   id: string,
   data: { approval_status: string; edited_angle?: string }
 ) {
-  return apiFetch<Idea>(`/ideas/${id}`, {
+  // Approving discards the idea's still-pending siblings (same source article)
+  // server-side; discarded_siblings reports how many so the UI can update.
+  return apiFetch<Idea & { discarded_siblings?: number }>(`/ideas/${id}`, {
     method: "PATCH",
     body: JSON.stringify(data),
   });
@@ -169,6 +171,7 @@ export interface Idea {
   score: number | null;
   recent_coverage_flag: boolean;
   approval_status: string;
+  source_article_id: string | null;
   source_article_date: string | null;
   source_article: SourceArticle | null;
   created_at: string;

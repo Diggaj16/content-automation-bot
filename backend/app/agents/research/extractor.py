@@ -10,6 +10,7 @@ Also provides normalize_url() used by the dedup checker.
 """
 from __future__ import annotations
 
+import os
 import re
 from datetime import datetime
 from typing import Optional
@@ -23,8 +24,6 @@ from pydantic import BaseModel
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
-
-import os
 
 # On Windows set PLAYWRIGHT_BROWSER_CHANNEL=msedge in .env to use installed Edge.
 # In Docker leave unset — Playwright's bundled Chromium is used automatically.
@@ -55,6 +54,7 @@ _CONTENT_SELECTORS = [
     "[class*='story-content']",
     "[class*='post-content']",
     "[class*='entry-content']",
+    "[class*='content_area']",  # India Today Group sites (Business Today, etc.)
     "[itemprop='articleBody']",
     "main",
     "[role='main']",

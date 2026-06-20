@@ -1,9 +1,10 @@
 """
 LangGraph tool factory for the orchestrator agent.
 
-Call make_tools(supabase, arq_pool) once at startup — tools receive
-supabase and arq_pool via closure so callers don't need to pass them
-as tool arguments (which would leak internal types into the LLM's context).
+Call make_tools(arq_pool, ...) once at startup — the agent (and these tools,
+captured via closure) is built once and cached for the app's lifetime. A
+SQLAlchemy Session must NOT be captured the same way a long-lived Supabase
+client was — each tool opens its own short-lived session_scope() per call.
 """
 from __future__ import annotations
 
@@ -11,8 +12,23 @@ from typing import Optional
 from urllib.parse import urlparse
 
 from langchain_core.tools import tool
-from supabase import Client
+from sqlalchemy import select
 
+from app.db.orm import (
+    BrandMemory,
+    CuratedSite,
+    Draft,
+    EmailSubscriber,
+    Idea,
+    KnowledgeBase,
+    PublishedPost,
+    RawContent,
+    RunLog,
+    TopicPerformanceModel,
+    UserDecisionSummary,
+)
+from app.db.session import session_scope
+from app.db.vector_search import match_brand_memory
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -141,7 +157,12 @@ def _is_safe_url(url: str) -> bool:
         return False  # fail closed on any unexpected error
 
 
-def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, anthropic_api_key: str | None = None) -> list:
+def _dt16(dt) -> str:
+    """Format a datetime like the old Supabase ISO-string[:16] slices did. None-safe."""
+    return dt.isoformat()[:16] if dt else "never"
+
+
+def make_tools(arq_pool, tavily_api_key: str | None = None, anthropic_api_key: str | None = None) -> list:
     """Build and return all orchestrator tool callables."""
 
     @tool
@@ -175,7 +196,6 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
         domain will use it without asking you to log in again.
         site_url: full URL to open, e.g. https://www.livemint.com or https://economictimes.com/login"""
         try:
-            from urllib.parse import urlparse
             if not _is_safe_url(site_url):
                 return f"Error: Cannot open browser for private/internal URL '{site_url}'."
             domain = urlparse(site_url).netloc.lstrip("www.")
@@ -225,43 +245,34 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
     def get_analytics_summary() -> str:
         """Return last 5 run logs and average performance per platform from content analytics."""
         try:
-            logs_resp = (
-                supabase.table("run_logs")
-                .select("agent_name, trigger_type, success_count, failure_count, duration_seconds, token_cost, created_at")
-                .order("created_at", desc=True)
-                .limit(5)
-                .execute()
-            )
-            analytics_resp = (
-                supabase.table("content_analytics")
-                .select("platform, performance_score")
-                .limit(100)
-                .execute()
-            )
+            from app.db.orm import ContentAnalytics
+            with session_scope() as db:
+                logs = db.execute(
+                    select(RunLog).order_by(RunLog.created_at.desc()).limit(5)
+                ).scalars().all()
+                analytics_rows = db.execute(select(ContentAnalytics).limit(100)).scalars().all()
 
-            lines = ["=== Recent Runs ==="]
-            for log in (logs_resp.data or []):
-                cost = log.get("token_cost", {}) or {}
-                total_usd = cost.get("total_usd", 0)
-                lines.append(
-                    f"{log['agent_name']} | success={log['success_count']} "
-                    f"fail={log['failure_count']} | ${total_usd:.4f} | {log['created_at'][:16]}"
-                )
+                lines = ["=== Recent Runs ==="]
+                for log in logs:
+                    cost = log.token_cost or {}
+                    total_usd = cost.get("total_usd", 0)
+                    lines.append(
+                        f"{log.agent_name} | success={log.success_count} "
+                        f"fail={log.failure_count} | ${total_usd:.4f} | {_dt16(log.created_at)}"
+                    )
 
-            platform_scores: dict[str, list[float]] = {}
-            for row in (analytics_resp.data or []):
-                p = row["platform"]
-                s = row.get("performance_score")
-                if s is not None:
-                    platform_scores.setdefault(p, []).append(s)
+                platform_scores: dict[str, list[float]] = {}
+                for row in analytics_rows:
+                    if row.performance_score is not None:
+                        platform_scores.setdefault(row.platform, []).append(row.performance_score)
 
-            if platform_scores:
-                lines.append("\n=== Platform Averages ===")
-                for platform, scores in sorted(platform_scores.items()):
-                    avg = sum(scores) / len(scores)
-                    lines.append(f"{platform}: avg score={avg:.2f} ({len(scores)} posts)")
+                if platform_scores:
+                    lines.append("\n=== Platform Averages ===")
+                    for platform, scores in sorted(platform_scores.items()):
+                        avg = sum(scores) / len(scores)
+                        lines.append(f"{platform}: avg score={avg:.2f} ({len(scores)} posts)")
 
-            return "\n".join(lines)
+                return "\n".join(lines)
         except Exception as exc:
             logger.warning("get_analytics_summary failed", extra={"error": str(exc)})
             return f"Error fetching analytics: {exc}"
@@ -280,17 +291,18 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
             return f"Error: URL '{url}' resolves to a private/internal address and cannot be added."
 
         try:
-            resp = supabase.table("curated_sites").insert({
-                "site_name": name,
-                "section_url": url,
-                "active": True,
-                "pre_score_threshold": threshold,
-                "consecutive_failures": 0,
-            }).execute()
-            if resp.data:
-                site_id = resp.data[0].get("id", "unknown")
-                return f"Added curated site '{name}' (id={site_id}, threshold={threshold})."
-            return f"Added '{name}' but insert returned no data."
+            with session_scope() as db:
+                site = CuratedSite(
+                    site_name=name,
+                    section_url=url,
+                    active=True,
+                    pre_score_threshold=threshold,
+                    consecutive_failures=0,
+                )
+                db.add(site)
+                db.flush()
+                site_id = str(site.id)
+            return f"Added curated site '{name}' (id={site_id}, threshold={threshold})."
         except Exception as exc:
             logger.warning("add_curated_site failed", extra={"error": str(exc)})
             return f"Error adding site: {exc}"
@@ -300,14 +312,11 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
         """Deactivate a curated site by name (soft delete — sets active=false).
         The site will no longer be scraped in future research runs."""
         try:
-            resp = (
-                supabase.table("curated_sites")
-                .update({"active": False})
-                .eq("site_name", site_name)
-                .execute()
-            )
-            if not resp.data:
-                return f"No site named '{site_name}' found."
+            with session_scope() as db:
+                site = db.execute(select(CuratedSite).where(CuratedSite.site_name == site_name)).scalar_one_or_none()
+                if site is None:
+                    return f"No site named '{site_name}' found."
+                site.active = False
             return f"Site '{site_name}' has been deactivated and will no longer be scraped."
         except Exception as exc:
             logger.warning("remove_curated_site failed", extra={"error": str(exc)})
@@ -317,24 +326,18 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
     def list_curated_sites() -> str:
         """List all curated news sites with their active status, failure count, and last run time."""
         try:
-            resp = (
-                supabase.table("curated_sites")
-                .select("site_name, section_url, active, consecutive_failures, last_run_at, pre_score_threshold")
-                .order("site_name")
-                .execute()
-            )
-            sites = resp.data or []
-            if not sites:
-                return "No curated sites configured."
-            lines = []
-            for s in sites:
-                status = "ACTIVE" if s.get("active") else "INACTIVE"
-                last_run = s["last_run_at"][:16] if s.get("last_run_at") else "never"
-                lines.append(
-                    f"[{status}] {s['site_name']} | threshold={s.get('pre_score_threshold', 'n/a')} "
-                    f"| failures={s.get('consecutive_failures', 0)} | last_run={last_run}"
-                )
-            return f"{len(sites)} curated site(s):\n" + "\n".join(lines)
+            with session_scope() as db:
+                sites = db.execute(select(CuratedSite).order_by(CuratedSite.site_name)).scalars().all()
+                if not sites:
+                    return "No curated sites configured."
+                lines = []
+                for s in sites:
+                    status = "ACTIVE" if s.active else "INACTIVE"
+                    lines.append(
+                        f"[{status}] {s.site_name} | threshold={s.pre_score_threshold} "
+                        f"| failures={s.consecutive_failures} | last_run={_dt16(s.last_run_at)}"
+                    )
+                return f"{len(sites)} curated site(s):\n" + "\n".join(lines)
         except Exception as exc:
             logger.warning("list_curated_sites failed", extra={"error": str(exc)})
             return f"Error listing sites: {exc}"
@@ -343,22 +346,17 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
     def get_topic_performance() -> str:
         """Return all topic categories ranked by performance score from the topic_performance_model."""
         try:
-            resp = (
-                supabase.table("topic_performance_model")
-                .select("topic_category, performance_score, sample_count, updated_at")
-                .order("performance_score", desc=True)
-                .execute()
-            )
-            rows = resp.data or []
-            if not rows:
-                return "No topic performance data yet."
-            lines = []
-            for r in rows:
-                lines.append(
-                    f"{r['topic_category']}: score={r['performance_score']:.2f} "
-                    f"({r['sample_count']} samples)"
-                )
-            return "Topic performance (best to worst):\n" + "\n".join(lines)
+            with session_scope() as db:
+                rows = db.execute(
+                    select(TopicPerformanceModel).order_by(TopicPerformanceModel.performance_score.desc())
+                ).scalars().all()
+                if not rows:
+                    return "No topic performance data yet."
+                lines = [
+                    f"{r.topic_category}: score={r.performance_score:.2f} ({r.sample_count} samples)"
+                    for r in rows
+                ]
+                return "Topic performance (best to worst):\n" + "\n".join(lines)
         except Exception as exc:
             logger.warning("get_topic_performance failed", extra={"error": str(exc)})
             return f"Error fetching topic performance: {exc}"
@@ -367,26 +365,23 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
     def get_run_logs(limit: int = 5) -> str:
         """Return the last N agent run logs with timing, cost, and success/failure counts."""
         try:
-            resp = (
-                supabase.table("run_logs")
-                .select("agent_name, trigger_type, success_count, failure_count, duration_seconds, token_cost, created_at")
-                .order("created_at", desc=True)
-                .limit(limit)
-                .execute()
-            )
-            rows = resp.data or []
-            if not rows:
-                return "No run logs found."
-            lines = []
-            for r in rows:
-                cost = r.get("token_cost", {}) or {}
-                total_usd = cost.get("total_usd", 0)
-                lines.append(
-                    f"{r['created_at'][:16]} | {r['agent_name']} ({r['trigger_type']}) "
-                    f"| ok={r['success_count']} fail={r['failure_count']} "
-                    f"| {r['duration_seconds']:.1f}s | ${total_usd:.4f}"
-                )
-            return f"Last {len(rows)} run log(s):\n" + "\n".join(lines)
+            with session_scope() as db:
+                rows = db.execute(
+                    select(RunLog).order_by(RunLog.created_at.desc()).limit(limit)
+                ).scalars().all()
+                if not rows:
+                    return "No run logs found."
+                lines = []
+                for r in rows:
+                    cost = r.token_cost or {}
+                    total_usd = cost.get("total_usd", 0)
+                    duration = f"{r.duration_seconds:.1f}s" if r.duration_seconds is not None else "?s"
+                    lines.append(
+                        f"{_dt16(r.created_at)} | {r.agent_name} ({r.trigger_type}) "
+                        f"| ok={r.success_count} fail={r.failure_count} "
+                        f"| {duration} | ${total_usd:.4f}"
+                    )
+                return f"Last {len(rows)} run log(s):\n" + "\n".join(lines)
         except Exception as exc:
             logger.warning("get_run_logs failed", extra={"error": str(exc)})
             return f"Error fetching run logs: {exc}"
@@ -403,26 +398,18 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
         Optionally filter by platform (linkedin, twitter, blog, email).
         Returns id, angle, platform, score, and date for each idea."""
         try:
-            query = (
-                supabase.table("ideas")
-                .select("id, angle, platform, score, approval_status, created_at")
-                .eq("approval_status", status)
-                .order("score", desc=True)
-                .limit(limit)
-            )
-            if platform:
-                query = query.eq("platform", platform)
-            resp = query.execute()
-            ideas = resp.data or []
-            if not ideas:
-                return f"No {status.replace('_', ' ')} ideas found."
-            lines = []
-            for i in ideas:
-                score = f"score={i['score']:.1f}" if isinstance(i.get('score'), (int, float)) else "score=?"
-                lines.append(
-                    f"[{i['platform']}] {score} | {i['angle']}\n  id: {i['id']}"
-                )
-            return f"{len(ideas)} {status.replace('_', ' ')} idea(s):\n" + "\n".join(lines)
+            with session_scope() as db:
+                stmt = select(Idea).where(Idea.approval_status == status).order_by(Idea.score.desc()).limit(limit)
+                if platform:
+                    stmt = stmt.where(Idea.platform == platform)
+                ideas = db.execute(stmt).scalars().all()
+                if not ideas:
+                    return f"No {status.replace('_', ' ')} ideas found."
+                lines = []
+                for i in ideas:
+                    score = f"score={i.score:.1f}" if isinstance(i.score, (int, float)) else "score=?"
+                    lines.append(f"[{i.platform}] {score} | {i.angle}\n  id: {i.id}")
+                return f"{len(ideas)} {status.replace('_', ' ')} idea(s):\n" + "\n".join(lines)
         except Exception as exc:
             logger.warning("get_ideas failed", extra={"error": str(exc)})
             return f"Error fetching ideas: {exc}"
@@ -432,13 +419,14 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
         """Approve a Gate 1 idea. Optionally provide an edited_angle to refine the angle before approving.
         idea_id: the UUID of the idea (from get_ideas output)."""
         try:
-            payload: dict = {"approval_status": "approved"}
-            if edited_angle:
-                payload["edited_angle"] = edited_angle
-            resp = supabase.table("ideas").update(payload).eq("id", idea_id).execute()
-            if not resp.data:
-                return f"Idea {idea_id!r} not found."
-            angle = resp.data[0].get("angle") or resp.data[0].get("edited_angle") or idea_id
+            with session_scope() as db:
+                idea = db.get(Idea, idea_id)
+                if idea is None:
+                    return f"Idea {idea_id!r} not found."
+                idea.approval_status = "approved"
+                if edited_angle:
+                    idea.edited_angle = edited_angle
+                angle = idea.edited_angle or idea.angle
             return f"✓ Approved idea: {angle!r}"
         except Exception as exc:
             logger.warning("approve_idea failed", extra={"idea_id": idea_id, "error": str(exc)})
@@ -449,9 +437,11 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
         """Reject a Gate 1 idea.
         idea_id: the UUID of the idea (from get_ideas output)."""
         try:
-            resp = supabase.table("ideas").update({"approval_status": "rejected"}).eq("id", idea_id).execute()
-            if not resp.data:
-                return f"Idea {idea_id!r} not found."
+            with session_scope() as db:
+                idea = db.get(Idea, idea_id)
+                if idea is None:
+                    return f"Idea {idea_id!r} not found."
+                idea.approval_status = "rejected"
             return f"✓ Rejected idea {idea_id[:8]}…"
         except Exception as exc:
             logger.warning("reject_idea failed", extra={"idea_id": idea_id, "error": str(exc)})
@@ -467,8 +457,11 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
         errors = []
         for idea_id in idea_ids:
             try:
-                supabase.table("ideas").update({"approval_status": "rejected"}).eq("id", idea_id).execute()
-                count += 1
+                with session_scope() as db:
+                    idea = db.get(Idea, idea_id)
+                    if idea is not None:
+                        idea.approval_status = "rejected"
+                        count += 1
             except Exception as exc:
                 errors.append(f"{idea_id[:8]}: {exc}")
         result = f"✓ Rejected {count}/{len(idea_ids)} idea(s)."
@@ -512,18 +505,18 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
         if arq_pool is None:
             return "Error: job queue unavailable (Redis not connected)."
         try:
-            resp = (
-                supabase.table("ideas")
-                .select("id")
-                .eq("draft_status", "failed")
-                .eq("approval_status", "approved")
-                .execute()
-            )
-            failed_ids = [r["id"] for r in (resp.data or [])]
-            if not failed_ids:
-                return "No failed draft ideas found."
-            # Reset status to pending before retrying
-            supabase.table("ideas").update({"draft_status": "pending"}).in_("id", failed_ids).execute()
+            with session_scope() as db:
+                failed = db.execute(
+                    select(Idea.id).where(Idea.draft_status == "failed", Idea.approval_status == "approved")
+                ).scalars().all()
+                failed_ids = [str(i) for i in failed]
+                if not failed_ids:
+                    return "No failed draft ideas found."
+                db.execute(
+                    Idea.__table__.update()
+                    .where(Idea.id.in_(failed))
+                    .values(draft_status="pending")
+                )
             job = await arq_pool.enqueue_job(
                 "creation_agent_task",
                 idea_ids=failed_ids,
@@ -549,28 +542,20 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
         """Browse content drafts. status: 'pending_approval', 'approved', or 'rejected'.
         Shows platform, preview of content, finance flags, and date."""
         try:
-            query = (
-                supabase.table("drafts")
-                .select("id, platform, content_text, finance_flags, approval_status, created_at")
-                .eq("approval_status", status)
-                .order("created_at", desc=True)
-                .limit(limit)
-            )
-            if platform:
-                query = query.eq("platform", platform)
-            resp = query.execute()
-            drafts = resp.data or []
-            if not drafts:
-                return f"No {status.replace('_', ' ')} drafts found."
-            lines = []
-            for d in drafts:
-                preview = (d.get("content_text") or "")[:120].replace("\n", " ")
-                flags = d.get("finance_flags") or []
-                flag_str = f" ⚠ {len(flags)} flag(s)" if flags else ""
-                lines.append(
-                    f"[{d['platform']}]{flag_str} | {preview}…\n  id: {d['id']}"
-                )
-            return f"{len(drafts)} {status.replace('_', ' ')} draft(s):\n" + "\n".join(lines)
+            with session_scope() as db:
+                stmt = select(Draft).where(Draft.approval_status == status).order_by(Draft.created_at.desc()).limit(limit)
+                if platform:
+                    stmt = stmt.where(Draft.platform == platform)
+                drafts = db.execute(stmt).scalars().all()
+                if not drafts:
+                    return f"No {status.replace('_', ' ')} drafts found."
+                lines = []
+                for d in drafts:
+                    preview = (d.content_text or "")[:120].replace("\n", " ")
+                    flags = d.finance_flags or []
+                    flag_str = f" ⚠ {len(flags)} flag(s)" if flags else ""
+                    lines.append(f"[{d.platform}]{flag_str} | {preview}…\n  id: {d.id}")
+                return f"{len(drafts)} {status.replace('_', ' ')} draft(s):\n" + "\n".join(lines)
         except Exception as exc:
             logger.warning("get_drafts failed", extra={"error": str(exc)})
             return f"Error fetching drafts: {exc}"
@@ -581,12 +566,13 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
         draft_id: UUID from get_drafts output.
         scheduled_at: optional ISO datetime string (e.g. '2026-06-02T09:00:00+05:30')."""
         try:
-            payload: dict = {"approval_status": "approved"}
-            if scheduled_at:
-                payload["scheduled_at"] = scheduled_at
-            resp = supabase.table("drafts").update(payload).eq("id", draft_id).execute()
-            if not resp.data:
-                return f"Draft {draft_id!r} not found."
+            with session_scope() as db:
+                draft = db.get(Draft, draft_id)
+                if draft is None:
+                    return f"Draft {draft_id!r} not found."
+                draft.approval_status = "approved"
+                if scheduled_at:
+                    draft.scheduled_at = scheduled_at
             sched = f" (scheduled: {scheduled_at})" if scheduled_at else ""
             return f"✓ Approved draft {draft_id[:8]}…{sched}"
         except Exception as exc:
@@ -598,9 +584,11 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
         """Reject a Gate 2 draft.
         draft_id: UUID from get_drafts output."""
         try:
-            resp = supabase.table("drafts").update({"approval_status": "rejected"}).eq("id", draft_id).execute()
-            if not resp.data:
-                return f"Draft {draft_id!r} not found."
+            with session_scope() as db:
+                draft = db.get(Draft, draft_id)
+                if draft is None:
+                    return f"Draft {draft_id!r} not found."
+                draft.approval_status = "rejected"
             return f"✓ Rejected draft {draft_id[:8]}…"
         except Exception as exc:
             logger.warning("reject_draft failed", extra={"draft_id": draft_id, "error": str(exc)})
@@ -622,18 +610,18 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
                 local_model=_settings.local_embedding_model,
             )
             embedding = _embed.embed_one(content)
-            row = {
-                "content": content,
-                "platform": platform,
-                "performance_metrics": {},
-            }
-            if embedding:
-                row["embedding"] = embedding
-            resp = supabase.table("brand_memory").insert(row).execute()
+            with session_scope() as db:
+                bm = BrandMemory(
+                    content=content,
+                    platform=platform,
+                    performance_metrics={},
+                    embedding=embedding or None,
+                )
+                db.add(bm)
+                db.flush()
+                bm_id = str(bm.id)
             embedded = "with embedding" if embedding else "without embedding (embedder unavailable)"
-            if resp.data:
-                return f"Saved to brand memory for {platform} {embedded} (id={resp.data[0].get('id', '?')[:8]}...)"
-            return f"Saved to brand memory for {platform} {embedded}."
+            return f"Saved to brand memory for {platform} {embedded} (id={bm_id[:8]}...)"
         except Exception as exc:
             logger.warning("add_brand_memory failed", extra={"error": str(exc)})
             return f"Error adding brand memory: {exc}"
@@ -643,23 +631,18 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
         """List recent brand memory posts used as style reference by the creation agent.
         Optionally filter by platform."""
         try:
-            query = (
-                supabase.table("brand_memory")
-                .select("id, platform, content, created_at")
-                .order("created_at", desc=True)
-                .limit(limit)
-            )
-            if platform:
-                query = query.eq("platform", platform)
-            resp = query.execute()
-            rows = resp.data or []
-            if not rows:
-                return "No brand memory entries found."
-            lines = [
-                f"[{r['platform']}] {(r.get('content') or '')[:100]}...\n  id: {r['id']}"
-                for r in rows
-            ]
-            return f"{len(rows)} brand memory entry(ies):\n" + "\n".join(lines)
+            with session_scope() as db:
+                stmt = select(BrandMemory).order_by(BrandMemory.created_at.desc()).limit(limit)
+                if platform:
+                    stmt = stmt.where(BrandMemory.platform == platform)
+                rows = db.execute(stmt).scalars().all()
+                if not rows:
+                    return "No brand memory entries found."
+                lines = [
+                    f"[{r.platform}] {(r.content or '')[:100]}...\n  id: {r.id}"
+                    for r in rows
+                ]
+                return f"{len(rows)} brand memory entry(ies):\n" + "\n".join(lines)
         except Exception as exc:
             logger.warning("list_brand_memory failed", extra={"error": str(exc)})
             return f"Error listing brand memory: {exc}"
@@ -670,22 +653,17 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
     async def list_subscribers(limit: int = 10) -> str:
         """List active email subscribers."""
         try:
-            resp = (
-                supabase.table("email_subscribers")
-                .select("id, email, name, created_at")
-                .eq("active", True)
-                .order("created_at", desc=True)
-                .limit(limit)
-                .execute()
-            )
-            rows = resp.data or []
-            if not rows:
-                return "No active subscribers found."
-            lines = [
-                f"{r.get('name') or '—'} <{r['email']}>"
-                for r in rows
-            ]
-            return f"{len(rows)} active subscriber(s):\n" + "\n".join(lines)
+            with session_scope() as db:
+                rows = db.execute(
+                    select(EmailSubscriber)
+                    .where(EmailSubscriber.active.is_(True))
+                    .order_by(EmailSubscriber.created_at.desc())
+                    .limit(limit)
+                ).scalars().all()
+                if not rows:
+                    return "No active subscribers found."
+                lines = [f"{r.name or '—'} <{r.email}>" for r in rows]
+                return f"{len(rows)} active subscriber(s):\n" + "\n".join(lines)
         except Exception as exc:
             logger.warning("list_subscribers failed", extra={"error": str(exc)})
             return f"Error listing subscribers: {exc}"
@@ -696,15 +674,15 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
         email: valid email address. name: optional display name."""
         import uuid as _uuid
         try:
-            resp = supabase.table("email_subscribers").insert({
-                "email": email,
-                "name": name or None,
-                "active": True,
-                "unsubscribe_token": str(_uuid.uuid4()),
-            }).execute()
-            if resp.data:
-                return f"✓ Added subscriber: {email}"
-            return f"Error: Insert returned no data for {email!r} — may already exist."
+            with session_scope() as db:
+                sub = EmailSubscriber(
+                    email=email,
+                    name=name or None,
+                    active=True,
+                    unsubscribe_token=str(_uuid.uuid4()),
+                )
+                db.add(sub)
+            return f"✓ Added subscriber: {email}"
         except Exception as exc:
             logger.warning("add_email_subscriber failed", extra={"email": email, "error": str(exc)})
             return f"Error adding subscriber: {exc}"
@@ -713,14 +691,11 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
     async def remove_email_subscriber(email: str) -> str:
         """Deactivate (soft-delete) an email subscriber by email address."""
         try:
-            resp = (
-                supabase.table("email_subscribers")
-                .update({"active": False})
-                .eq("email", email)
-                .execute()
-            )
-            if not resp.data:
-                return f"No subscriber found with email {email!r}."
+            with session_scope() as db:
+                sub = db.execute(select(EmailSubscriber).where(EmailSubscriber.email == email)).scalar_one_or_none()
+                if sub is None:
+                    return f"No subscriber found with email {email!r}."
+                sub.active = False
             return f"Removed subscriber: {email}"
         except Exception as exc:
             logger.warning("remove_email_subscriber failed", extra={"email": email, "error": str(exc)})
@@ -733,21 +708,17 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
         """Show recent rejection pattern summaries — AI-generated analyses of why ideas were rejected.
         Useful for understanding what content to avoid."""
         try:
-            resp = (
-                supabase.table("user_decision_summaries")
-                .select("summary_text, rejection_count, created_at")
-                .order("created_at", desc=True)
-                .limit(limit)
-                .execute()
-            )
-            rows = resp.data or []
-            if not rows:
-                return "No decision summaries yet."
-            lines = [
-                f"[{r['created_at'][:10]}] ({r['rejection_count']} rejections)\n{r['summary_text']}"
-                for r in rows
-            ]
-            return "\n\n".join(lines)
+            with session_scope() as db:
+                rows = db.execute(
+                    select(UserDecisionSummary).order_by(UserDecisionSummary.created_at.desc()).limit(limit)
+                ).scalars().all()
+                if not rows:
+                    return "No decision summaries yet."
+                lines = [
+                    f"[{r.created_at.isoformat()[:10]}] ({r.rejection_count} rejections)\n{r.summary_text}"
+                    for r in rows
+                ]
+                return "\n\n".join(lines)
         except Exception as exc:
             logger.warning("get_decision_summaries failed", extra={"error": str(exc)})
             return f"Error fetching decision summaries: {exc}"
@@ -757,23 +728,18 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
         """Browse recently scraped articles from the research pipeline.
         Optionally filter by source_name (e.g. 'ET Markets', 'LiveMint')."""
         try:
-            query = (
-                supabase.table("raw_content")
-                .select("id, title, source_name, pre_score, word_count, created_at, url")
-                .order("created_at", desc=True)
-                .limit(limit)
-            )
-            if source_name:
-                query = query.eq("source_name", source_name)
-            resp = query.execute()
-            rows = resp.data or []
-            if not rows:
-                return "No articles found."
-            lines = [
-                f"[{r['source_name']}] score={r.get('pre_score', '?')} | {r['title']}\n  {r['url'][:80]}"
-                for r in rows
-            ]
-            return f"{len(rows)} article(s):\n" + "\n".join(lines)
+            with session_scope() as db:
+                stmt = select(RawContent).order_by(RawContent.created_at.desc()).limit(limit)
+                if source_name:
+                    stmt = stmt.where(RawContent.source_name == source_name)
+                rows = db.execute(stmt).scalars().all()
+                if not rows:
+                    return "No articles found."
+                lines = [
+                    f"[{r.source_name}] score={r.pre_score if r.pre_score is not None else '?'} | {r.title}\n  {r.url[:80]}"
+                    for r in rows
+                ]
+                return f"{len(rows)} article(s):\n" + "\n".join(lines)
         except Exception as exc:
             logger.warning("get_recent_articles failed", extra={"error": str(exc)})
             return f"Error fetching articles: {exc}"
@@ -782,23 +748,22 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
     async def get_published_posts(platform: Optional[str] = None, limit: int = 5) -> str:
         """Show recently published posts. Optionally filter by platform."""
         try:
-            query = (
-                supabase.table("published_posts")
-                .select("id, platform, published_at, content_preview")
-                .order("published_at", desc=True)
-                .limit(limit)
-            )
-            if platform:
-                query = query.eq("platform", platform)
-            resp = query.execute()
-            rows = resp.data or []
-            if not rows:
-                return "No published posts found."
-            lines = [
-                f"[{r['platform']}] {(r.get('published_at') or '')[:10]} | {(r.get('content_preview') or '')[:80]}..."
-                for r in rows
-            ]
-            return f"{len(rows)} published post(s):\n" + "\n".join(lines)
+            with session_scope() as db:
+                stmt = select(PublishedPost).order_by(PublishedPost.published_at.desc()).limit(limit)
+                if platform:
+                    stmt = stmt.where(PublishedPost.platform == platform)
+                rows = db.execute(stmt).scalars().all()
+                if not rows:
+                    return "No published posts found."
+                # published_posts has no content column — show the platform post
+                # identifier instead (the old Supabase query referenced a
+                # content_preview column that never existed in any migration
+                # and always errored; this is the corrected version).
+                lines = [
+                    f"[{r.platform}] {r.published_at.isoformat()[:10]} | post_identifier={r.post_identifier}"
+                    for r in rows
+                ]
+                return f"{len(rows)} published post(s):\n" + "\n".join(lines)
         except Exception as exc:
             logger.warning("get_published_posts failed", extra={"error": str(exc)})
             return f"Error fetching published posts: {exc}"
@@ -807,20 +772,17 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
     async def list_kb_files() -> str:
         """List knowledge base files that have been uploaded and chunked for retrieval."""
         try:
-            resp = (
-                supabase.table("knowledge_base")
-                .select("source_file, chunk_index, created_at")
-                .order("source_file")
-                .execute()
-            )
-            rows = resp.data or []
-            if not rows:
-                return "No knowledge base files uploaded."
-            files: dict[str, int] = {}
-            for r in rows:
-                files[r["source_file"]] = files.get(r["source_file"], 0) + 1
-            lines = [f"{fname} ({count} chunks)" for fname, count in files.items()]
-            return f"{len(files)} KB file(s):\n" + "\n".join(lines)
+            with session_scope() as db:
+                rows = db.execute(
+                    select(KnowledgeBase.source_file).order_by(KnowledgeBase.source_file)
+                ).scalars().all()
+                if not rows:
+                    return "No knowledge base files uploaded."
+                files: dict[str, int] = {}
+                for source_file in rows:
+                    files[source_file] = files.get(source_file, 0) + 1
+                lines = [f"{fname} ({count} chunks)" for fname, count in files.items()]
+                return f"{len(files)} KB file(s):\n" + "\n".join(lines)
         except Exception as exc:
             logger.warning("list_kb_files failed", extra={"error": str(exc)})
             return f"Error listing KB files: {exc}"
@@ -921,7 +883,7 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
             )
 
         # Step 2 — Get brand voice via embedding similarity (not just recency)
-        brand_examples = ""
+        examples: list[str] = []
         try:
             from app.config import get_settings as _gs
             from app.agents.embedding.client import make_embed_client as _mec
@@ -929,22 +891,30 @@ def make_tools(supabase: Client, arq_pool, tavily_api_key: str | None = None, an
             _ec = _mec(google_api_key=_s.google_api_key, local_model=_s.local_embedding_model)
             topic_vec = _ec.embed_one(topic)
             if topic_vec:
-                bm_resp = supabase.rpc(
-                    "match_brand_memory",
-                    {"query_embedding": topic_vec, "match_count": 3, "filter_platform": platform},
-                ).execute()
-                examples = [r["content"] for r in (bm_resp.data or [])]
+                with session_scope() as db:
+                    rows = match_brand_memory(
+                        db, topic_vec, match_count=3, filter_platform=platform, days_back=None
+                    )
+                    examples = [r["content"] for r in rows]
             else:
                 raise ValueError("empty embedding")
         except Exception:
             # fallback: most recent 3
             try:
-                fb = supabase.table("brand_memory").select("content").eq("platform", platform).order("created_at", desc=True).limit(3).execute()
-                examples = [r["content"] for r in (fb.data or [])]
+                with session_scope() as db:
+                    fb = db.execute(
+                        select(BrandMemory)
+                        .where(BrandMemory.platform == platform)
+                        .order_by(BrandMemory.created_at.desc())
+                        .limit(3)
+                    ).scalars().all()
+                    examples = [r.content for r in fb]
             except Exception:
                 examples = []
-        if examples:
-            brand_examples = "Brand voice examples (match this style):\n\n" + "\n\n---\n\n".join(examples)
+        brand_examples = (
+            "Brand voice examples (match this style):\n\n" + "\n\n---\n\n".join(examples)
+            if examples else ""
+        )
 
         # Step 3 — Generate with Claude Sonnet for quality
         try:
@@ -991,20 +961,21 @@ Write the full post now. Return only the post text, nothing else."""
         """Save a generated post as a pending draft for review and approval.
         content: the full post text. platform: 'linkedin', 'twitter', 'blog', or 'email'."""
         try:
-            resp = supabase.table("drafts").insert({
-                "content_text": content,
-                "platform": platform,
-                "approval_status": "pending_approval",
-                "agent_reasoning": "Generated on-demand via orchestrator",
-                "finance_flags": [],
-            }).execute()
-            if resp.data:
-                draft_id = resp.data[0].get("id", "?")
-                return (
-                    f"Saved as pending draft (id={str(draft_id)[:8]}...). "
-                    f"Go to Gate 2 (Drafts) to review and approve it for publishing."
+            with session_scope() as db:
+                draft = Draft(
+                    content_text=content,
+                    platform=platform,
+                    approval_status="pending_approval",
+                    agent_reasoning="Generated on-demand via orchestrator",
+                    finance_flags=[],
                 )
-            return "Draft saved."
+                db.add(draft)
+                db.flush()
+                draft_id = str(draft.id)
+            return (
+                f"Saved as pending draft (id={draft_id[:8]}...). "
+                f"Go to Gate 2 (Drafts) to review and approve it for publishing."
+            )
         except Exception as exc:
             logger.warning("save_draft failed", extra={"error": str(exc)})
             return f"Error saving draft: {exc}"
@@ -1016,26 +987,24 @@ Write the full post now. Return only the post text, nothing else."""
         Useful to summarize current market trends before generating complex content.
         """
         try:
-            resp = (
-                supabase.table("raw_content")
-                .select("title, structured_summary")
-                .eq("processed", True)
-                .order("created_at", desc=True)
-                .limit(20)
-                .execute()
-            )
-            articles = resp.data or []
-            if not articles:
-                return f"No processed articles found in the last {days_back} days."
+            with session_scope() as db:
+                articles = db.execute(
+                    select(RawContent)
+                    .where(RawContent.processed.is_(True))
+                    .order_by(RawContent.created_at.desc())
+                    .limit(20)
+                ).scalars().all()
+                if not articles:
+                    return f"No processed articles found in the last {days_back} days."
 
-            briefing = f"--- Macro Briefing (Last {days_back} days) ---\n"
-            for a in articles:
-                summary = a.get("structured_summary") or {}
-                narrative = summary.get("story_narrative", a.get("title", ""))
-                implications = summary.get("implications", "")
-                briefing += f"\n- {narrative}\n  Impact: {implications}"
+                briefing = f"--- Macro Briefing (Last {days_back} days) ---\n"
+                for a in articles:
+                    summary = a.structured_summary or {}
+                    narrative = summary.get("story_narrative", a.title)
+                    implications = summary.get("implications", "")
+                    briefing += f"\n- {narrative}\n  Impact: {implications}"
 
-            return briefing
+                return briefing
         except Exception as exc:
             return f"Error generating macro briefing: {str(exc)}"
 

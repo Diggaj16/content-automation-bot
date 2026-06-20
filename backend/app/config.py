@@ -54,11 +54,11 @@ class Settings(BaseSettings):
     daily_cost_alert_usd: float = Field(5.0, gt=0, alias="DAILY_COST_ALERT_USD") #gt=0
 
     # Models
-    claude_model_heavy: str = Field("claude-sonnet-4-5", alias="CLAUDE_MODEL_HEAVY")
-    claude_model_light: str = Field("claude-haiku-4-5", alias="CLAUDE_MODEL_LIGHT")
+    claude_model_heavy: str = Field("claude-sonnet-4-6", alias="CLAUDE_MODEL_HEAVY")
+    claude_model_light: str = Field("claude-haiku-4-5-20251001", alias="CLAUDE_MODEL_LIGHT")
 
     # Orchestrator
-    orchestrator_model: str = Field("claude-sonnet-4-5", alias="ORCHESTRATOR_MODEL")
+    orchestrator_model: str = Field("claude-sonnet-4-6", alias="ORCHESTRATOR_MODEL")
 
     # Research agent
     article_min_words: int = Field(400, gt=0, alias="ARTICLE_MIN_WORDS") #gt=0
@@ -83,6 +83,11 @@ class Settings(BaseSettings):
 
     # Site health
     site_failure_pause_threshold: int = Field(5,gt=0, alias="SITE_FAILURE_PAUSE_THRESHOLD") #gt=0
+
+    # Analytics — metrics_fetcher.py is still a stub (random data, no real platform
+    # APIs wired up). Off by default so publishing_agent_task doesn't schedule
+    # deferred analytics jobs, and analytics_agent_task itself is a no-op when called.
+    analytics_enabled: bool = Field(False, alias="ANALYTICS_ENABLED")
 
 
 @lru_cache(maxsize=1)

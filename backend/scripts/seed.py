@@ -1,5 +1,5 @@
 """
-Seeds initial data into Supabase.
+Seeds initial data into Postgres.
 
 Run from backend/ with venv active:
     python scripts/seed.py
@@ -15,7 +15,11 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.db.client import get_supabase_client
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+from app.db.orm import BrandMemory, CuratedSite, StyleGuide, TopicPerformanceModel
+from app.db.session import session_scope
 
 INITIAL_SITES = [
     {
@@ -154,11 +158,16 @@ def seed_curated_sites(db) -> None:
     print("\n-> Seeding curated_sites...")
     for site in INITIAL_SITES:
         try:
-            db.table("curated_sites").upsert(
-                site, on_conflict="section_url"
-            ).execute()
+            stmt = (
+                pg_insert(CuratedSite)
+                .values(**site)
+                .on_conflict_do_update(index_elements=["section_url"], set_=site)
+            )
+            db.execute(stmt)
+            db.commit()
             print(f"  OK {site['site_name']} (threshold: {site['pre_score_threshold']})")
         except Exception as e:
+            db.rollback()
             print(f"  FAIL {site['site_name']}: {e}")
 
 
@@ -166,18 +175,18 @@ def seed_brand_memory(db) -> None:
     print("\n-> Seeding brand_memory (no embeddings yet - added in Plan 4)...")
     for sample in BRAND_VOICE_SAMPLES:
         try:
-            existing = (
-                db.table("brand_memory")
-                .select("id")
-                .ilike("content", f"{sample['content'][:80]}%")
-                .execute()
-            )
-            if existing.data:
+            probe = sample["content"][:80]
+            existing = db.execute(
+                select(BrandMemory.id).where(BrandMemory.content.ilike(f"{probe}%"))
+            ).first()
+            if existing:
                 print(f"  - Already exists: {sample['content'][:60]}...")
                 continue
-            db.table("brand_memory").insert(sample).execute()
+            db.add(BrandMemory(**sample))
+            db.commit()
             print(f"  OK {sample['content'][:60]}...")
         except Exception as e:
+            db.rollback()
             print(f"  FAIL Failed: {e}")
 
 
@@ -185,11 +194,16 @@ def seed_style_guide(db) -> None:
     print("\n-> Seeding style_guide (empty baseline)...")
     for row in INITIAL_STYLE_GUIDE:
         try:
-            db.table("style_guide").upsert(
-                row, on_conflict="platform"
-            ).execute()
+            stmt = (
+                pg_insert(StyleGuide)
+                .values(**row)
+                .on_conflict_do_update(index_elements=["platform"], set_=row)
+            )
+            db.execute(stmt)
+            db.commit()
             print(f"  OK {row['platform']}")
         except Exception as e:
+            db.rollback()
             print(f"  FAIL {row['platform']}: {e}")
 
 
@@ -197,26 +211,30 @@ def seed_topic_performance_model(db) -> None:
     print("\n-> Seeding topic_performance_model (default 0.5 scores)...")
     for category in INITIAL_TOPIC_CATEGORIES:
         try:
-            db.table("topic_performance_model").upsert(
-                {"topic_category": category, "performance_score": 0.5, "sample_count": 0},
-                on_conflict="topic_category",
-            ).execute()
+            payload = {"topic_category": category, "performance_score": 0.5, "sample_count": 0}
+            stmt = (
+                pg_insert(TopicPerformanceModel)
+                .values(**payload)
+                .on_conflict_do_update(index_elements=["topic_category"], set_=payload)
+            )
+            db.execute(stmt)
+            db.commit()
             print(f"  OK {category}")
         except Exception as e:
+            db.rollback()
             print(f"  FAIL {category}: {e}")
 
 
 def main() -> None:
     print("Starting seed...")
-    db = get_supabase_client()
-    seed_curated_sites(db)
-    seed_brand_memory(db)
-    seed_style_guide(db)
-    seed_topic_performance_model(db)
+    with session_scope() as db:
+        seed_curated_sites(db)
+        seed_brand_memory(db)
+        seed_style_guide(db)
+        seed_topic_performance_model(db)
     print("\nSeed complete.")
     print("\nNOTE: brand_memory rows have no embeddings.")
-    print("After setting VOYAGE_API_KEY, run: python scripts/embed_brand_memory.py")
-    print("(Written in Plan 4 - Orchestrator + Knowledge Base)")
+    print("After setting GOOGLE_API_KEY, run: python scripts/embed_brand_memory.py")
 
 
 if __name__ == "__main__":

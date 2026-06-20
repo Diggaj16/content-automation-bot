@@ -5,7 +5,6 @@ Uses regex to identify potentially sensitive financial content that requires
 human review before publishing. No AI calls — purely structural detection.
 """
 import re
-from typing import Optional
 
 from app.db.models import FinanceFlag
 from app.utils.logging import get_logger

@@ -17,8 +17,11 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from sqlalchemy import select
+
 from app.config import get_settings
-from app.db.client import get_supabase_client
+from app.db.orm import BrandMemory
+from app.db.session import session_scope
 from app.agents.embedding.client import make_embed_client
 
 # Each post is stored as a LinkedIn brand_memory row.
@@ -320,40 +323,44 @@ Additionally, there are additional exemptions. Members can now withdraw up to 10
 
 def main() -> None:
     settings = get_settings()
-    db = get_supabase_client()
     client = make_embed_client(
         google_api_key=settings.google_api_key,
         local_model=settings.local_embedding_model,
     )
     print(f"embed client: {type(client).__name__}")
 
-    # Skip posts already present (match on first 60 chars)
-    pending: list[str] = []
-    for post in BRAND_POSTS:
-        probe = post[:60]
-        existing = db.table("brand_memory").select("id").ilike("content", f"{probe}%").execute()
-        if existing.data:
-            print(f"  -- already present: {probe[:48]!r}")
-        else:
-            pending.append(post)
+    with session_scope() as db:
+        # Skip posts already present (match on first 60 chars)
+        pending: list[str] = []
+        for post in BRAND_POSTS:
+            probe = post[:60]
+            existing = db.execute(
+                select(BrandMemory.id).where(BrandMemory.content.ilike(f"{probe}%"))
+            ).first()
+            if existing:
+                print(f"  -- already present: {probe[:48]!r}")
+            else:
+                pending.append(post)
 
-    if not pending:
-        print("All brand posts already seeded. Nothing to do.")
-        return
+        if not pending:
+            print("All brand posts already seeded. Nothing to do.")
+            return
 
-    vectors = client.embed(pending, for_query=False)
-    inserted = 0
-    for post, vec in zip(pending, vectors):
-        row = {"content": post, "platform": "linkedin", "performance_metrics": {}}
-        if vec:
-            row["embedding"] = vec
-        try:
-            db.table("brand_memory").insert(row).execute()
-            inserted += 1
-            dim = len(vec) if vec else 0
-            print(f"  OK  inserted ({dim}-dim): {post[:48]!r}")
-        except Exception as exc:
-            print(f"  FAIL {post[:48]!r}: {exc}")
+        vectors = client.embed(pending, for_query=False)
+        inserted = 0
+        for post, vec in zip(pending, vectors):
+            row = {"content": post, "platform": "linkedin", "performance_metrics": {}}
+            if vec:
+                row["embedding"] = vec
+            try:
+                db.add(BrandMemory(**row))
+                db.commit()
+                inserted += 1
+                dim = len(vec) if vec else 0
+                print(f"  OK  inserted ({dim}-dim): {post[:48]!r}")
+            except Exception as exc:
+                db.rollback()
+                print(f"  FAIL {post[:48]!r}: {exc}")
 
     print(f"\nDone. {inserted}/{len(pending)} brand posts seeded with embeddings.")
 

@@ -399,7 +399,7 @@ export default function DraftsPage() {
   );
 
   const displayedDrafts = useMemo(() => {
-    let list = platformFilter ? drafts.filter((d) => d.platform === platformFilter) : drafts;
+    const list = platformFilter ? drafts.filter((d) => d.platform === platformFilter) : drafts;
     const sorted = [...list];
     switch (sortBy) {
       case "date_desc":   sorted.sort((a, b) => b.created_at.localeCompare(a.created_at)); break;

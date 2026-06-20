@@ -2,6 +2,7 @@
 # Growthvine Capital — Content Automation Stack
 #
 # Services:
+#   postgres — Postgres + pgvector (self-hosted, replaces Supabase)
 #   redis    — arq job queue
 #   api      — FastAPI server (uvicorn)
 #   worker   — unified arq worker (all agent tasks on arq:default)
@@ -12,9 +13,31 @@
 #   docker compose up --build -d       # detached
 #   docker compose logs -f worker      # tail worker logs
 #   docker compose down -v             # stop + remove volumes
+#
+# First run only — postgres starts empty, schema isn't auto-created:
+#   docker compose exec api alembic upgrade head
+#   docker compose exec api python scripts/seed.py
 # ─────────────────────────────────────────────────────────────────────────────
 
 services:
+
+  # ── Postgres ──────────────────────────────────────────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=contentautomation
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   # ── Redis ─────────────────────────────────────────────────────────────────
   redis:
@@ -41,11 +64,14 @@ services:
     env_file:
       - ./backend/.env
     environment:
+      - DATABASE_URL=postgresql+psycopg://postgres:postgres@postgres:5432/contentautomation
       - REDIS_URL=redis://redis:6379
       - CORS_ORIGINS=http://localhost:3000,http://frontend:3000
       # PLAYWRIGHT_BROWSER_CHANNEL is intentionally unset — Docker uses bundled Chromium.
       # login_site_task (headless=False) won't work in Docker — run that on local machine.
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
     volumes:
@@ -74,8 +100,11 @@ services:
     env_file:
       - ./backend/.env
     environment:
+      - DATABASE_URL=postgresql+psycopg://postgres:postgres@postgres:5432/contentautomation
       - REDIS_URL=redis://redis:6379
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
     volumes:
@@ -94,10 +123,14 @@ services:
       - ./frontend/.env.local
     environment:
       - BACKEND_URL=http://api:8000
+      # If backend/.env sets API_KEY, frontend/.env.local MUST set a matching
+      # BACKEND_API_KEY or every proxied request will 403. See .env.example in
+      # both backend/ and frontend/.
     depends_on:
       api:
         condition: service_healthy
 
 volumes:
+  postgres_data:
   redis_data:
   browser_sessions:

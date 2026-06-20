@@ -8,12 +8,32 @@ POST /tables/{table_name}          — insert a row
 PATCH /tables/{table_name}/{row_id} — update a row
 DELETE /tables/{table_name}/{row_id} — delete a row
 """
-from typing import Optional
+import uuid as _uuid
+from typing import Optional, Type
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from supabase import Client
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
-from app.api.deps import get_supabase
+from app.api.deps import get_db
+from app.db.base import Base
+from app.db.orm import (
+    BrandMemory,
+    ContentAnalytics,
+    CostLog,
+    CuratedSite,
+    Draft,
+    EmailSubscriber,
+    Idea,
+    KnowledgeBase,
+    PublishedPost,
+    RawContent,
+    RunLog,
+    SiteHealthLog,
+    StyleGuide,
+    TopicPerformanceModel,
+    UserDecisionSummary,
+)
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -38,14 +58,36 @@ ALLOWED_TABLES = [
     "cost_log",
 ]
 
+_TABLE_MODELS: dict[str, Type[Base]] = {
+    "curated_sites": CuratedSite,
+    "raw_content": RawContent,
+    "ideas": Idea,
+    "user_decision_summaries": UserDecisionSummary,
+    "drafts": Draft,
+    "published_posts": PublishedPost,
+    "content_analytics": ContentAnalytics,
+    "email_subscribers": EmailSubscriber,
+    "style_guide": StyleGuide,
+    "topic_performance_model": TopicPerformanceModel,
+    "brand_memory": BrandMemory,
+    "knowledge_base": KnowledgeBase,
+    "run_logs": RunLog,
+    "site_health_log": SiteHealthLog,
+    "cost_log": CostLog,
+}
+
 # Tables that sort by updated_at instead of created_at
 _TABLE_SORT_COLUMN: dict[str, str] = {
     "style_guide": "updated_at",
     "topic_performance_model": "updated_at",
 }
 
-# For these tables, enrich rows with a joined lookup to show human-readable context
+# For these tables, enrich rows with a joined lookup to show human-readable context.
 # key = table_name, value = (fk_column, lookup_table, lookup_id_col, display_cols)
+# NOTE: "raw_content_id" does not exist on `ideas` (the real FK is
+# source_article_id) — this enrichment was already a no-op under Supabase
+# (row.get("raw_content_id") was always None) and is kept as-is here rather
+# than silently "fixed" as part of an unrelated DB migration.
 _ROW_ENRICHMENTS: dict[str, tuple[str, str, str, list[str]]] = {
     "ideas": ("raw_content_id", "raw_content", "id", ["title", "source_name"]),
 }
@@ -53,16 +95,39 @@ _ROW_ENRICHMENTS: dict[str, tuple[str, str, str, list[str]]] = {
 VECTOR_COLUMNS = {"brand_memory": "embedding", "knowledge_base": "embedding"}
 
 
-def _select_columns(table_name: str) -> str:
-    col = VECTOR_COLUMNS.get(table_name)
-    if col:
-        return f"*, !inner({col})"
-    return "*"
-
-
-def _validate_table(table_name: str) -> None:
-    if table_name not in ALLOWED_TABLES:
+def _validate_table(table_name: str) -> Type[Base]:
+    model = _TABLE_MODELS.get(table_name)
+    if model is None:
         raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
+    return model
+
+
+def _row_to_dict(model: Type[Base], row, exclude: Optional[str] = None) -> dict:
+    return {
+        c.name: getattr(row, c.name)
+        for c in model.__table__.columns
+        if c.name != exclude
+    }
+
+
+def _coerce_filter_value(model: Type[Base], column_name: str, raw_value: str):
+    """Best-effort coercion of a query-string filter value to the column's Python type."""
+    column = model.__table__.columns.get(column_name)
+    if column is None:
+        return raw_value
+    py_type = column.type.python_type
+    try:
+        if py_type is bool:
+            return raw_value.lower() in ("true", "1", "yes")
+        if py_type is int:
+            return int(raw_value)
+        if py_type is float:
+            return float(raw_value)
+        if py_type is _uuid.UUID:
+            return _uuid.UUID(raw_value)
+        return raw_value
+    except (ValueError, TypeError):
+        return raw_value
 
 
 @router.get("")
@@ -79,28 +144,31 @@ def list_rows(
     order_desc: bool = Query(default=True),
     filter_column: Optional[str] = Query(default=None),
     filter_value: Optional[str] = Query(default=None),
-    supabase: Client = Depends(get_supabase),
+    db: Session = Depends(get_db),
 ) -> dict:
-    _validate_table(table_name)
+    model = _validate_table(table_name)
     # Substitute the correct sort column when caller uses the generic default
     default_sort = _TABLE_SORT_COLUMN.get(table_name, "created_at")
     effective_order_by = default_sort if order_by == "created_at" and table_name in _TABLE_SORT_COLUMN else order_by
     try:
         exclude_col = VECTOR_COLUMNS.get(table_name)
-        query = supabase.table(table_name).select("*", count="exact")
+
+        count_stmt = select(func.count()).select_from(model)
+        query = select(model)
 
         if filter_column and filter_value is not None:
-            query = query.eq(filter_column, filter_value)
+            value = _coerce_filter_value(model, filter_column, filter_value)
+            col = getattr(model, filter_column)
+            count_stmt = count_stmt.where(col == value)
+            query = query.where(col == value)
 
-        query = query.order(effective_order_by, desc=order_desc)
-        query = query.range(offset, offset + limit - 1)
+        order_col = getattr(model, effective_order_by)
+        query = query.order_by(order_col.desc() if order_desc else order_col.asc())
+        query = query.offset(offset).limit(limit)
 
-        resp = query.execute()
-        rows = resp.data or []
-
-        if exclude_col:
-            for row in rows:
-                row.pop(exclude_col, None)
+        total = db.execute(count_stmt).scalar_one()
+        rows_orm = db.execute(query).scalars().all()
+        rows = [_row_to_dict(model, r, exclude=exclude_col) for r in rows_orm]
 
         # Enrich rows with human-readable context from related tables
         enrichment = _ROW_ENRICHMENTS.get(table_name)
@@ -109,16 +177,14 @@ def list_rows(
             fk_ids = list({row[fk_col] for row in rows if row.get(fk_col)})
             if fk_ids:
                 try:
-                    sel = ", ".join([lookup_id_col] + display_cols)
-                    lookup_resp = (
-                        supabase.table(lookup_table)
-                        .select(sel)
-                        .in_(lookup_id_col, fk_ids)
-                        .execute()
-                    )
+                    lookup_model = _TABLE_MODELS[lookup_table]
+                    lookup_id_attr = getattr(lookup_model, lookup_id_col)
+                    lookup_rows = db.execute(
+                        select(lookup_model).where(lookup_id_attr.in_(fk_ids))
+                    ).scalars().all()
                     lookup_map: dict = {
-                        r[lookup_id_col]: {c: r.get(c) for c in display_cols}
-                        for r in (lookup_resp.data or [])
+                        getattr(r, lookup_id_col): {c: getattr(r, c) for c in display_cols}
+                        for r in lookup_rows
                     }
                     for row in rows:
                         fk_val = row.get(fk_col)
@@ -133,12 +199,14 @@ def list_rows(
         return {
             "table": table_name,
             "rows": rows,
-            "count": resp.count,
+            "count": total,
             "limit": limit,
             "offset": offset,
             "columns": columns,
             "default_sort": default_sort,
         }
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.warning("tables router error", extra={"error": str(exc)})
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -148,27 +216,16 @@ def list_rows(
 def get_row(
     table_name: str,
     row_id: str,
-    supabase: Client = Depends(get_supabase),
+    db: Session = Depends(get_db),
 ) -> dict:
-    _validate_table(table_name)
+    model = _validate_table(table_name)
     try:
-        id_col = "id"
-        resp = (
-            supabase.table(table_name)
-            .select("*")
-            .eq(id_col, row_id)
-            .limit(1)
-            .execute()
-        )
-        if not resp.data:
+        row = db.get(model, _uuid.UUID(row_id))
+        if row is None:
             raise HTTPException(status_code=404, detail="Row not found")
 
-        row = resp.data[0]
         exclude_col = VECTOR_COLUMNS.get(table_name)
-        if exclude_col:
-            row.pop(exclude_col, None)
-
-        return row
+        return _row_to_dict(model, row, exclude=exclude_col)
     except HTTPException:
         raise
     except Exception as exc:
@@ -180,20 +237,23 @@ def get_row(
 def insert_row(
     table_name: str,
     payload: dict,
-    supabase: Client = Depends(get_supabase),
+    db: Session = Depends(get_db),
 ) -> dict:
-    _validate_table(table_name)
+    model = _validate_table(table_name)
     payload.pop("id", None)
     payload.pop("created_at", None)
     payload.pop("updated_at", None)
     try:
-        resp = supabase.table(table_name).insert(payload).execute()
-        if not resp.data:
-            raise HTTPException(status_code=500, detail="Insert returned no data")
-        return resp.data[0]
+        valid_cols = set(model.__table__.columns.keys())
+        clean_payload = {k: v for k, v in payload.items() if k in valid_cols}
+        row = model(**clean_payload)
+        db.add(row)
+        db.commit()
+        return _row_to_dict(model, row)
     except HTTPException:
         raise
     except Exception as exc:
+        db.rollback()
         logger.warning("tables router error", extra={"error": str(exc)})
         raise HTTPException(status_code=500, detail="Internal server error")
 
@@ -203,24 +263,26 @@ def update_row(
     table_name: str,
     row_id: str,
     payload: dict,
-    supabase: Client = Depends(get_supabase),
+    db: Session = Depends(get_db),
 ) -> dict:
-    _validate_table(table_name)
+    model = _validate_table(table_name)
     payload.pop("id", None)
     payload.pop("created_at", None)
     try:
-        resp = (
-            supabase.table(table_name)
-            .update(payload)
-            .eq("id", row_id)
-            .execute()
-        )
-        if not resp.data:
+        row = db.get(model, _uuid.UUID(row_id))
+        if row is None:
             raise HTTPException(status_code=404, detail="Row not found")
-        return resp.data[0]
+
+        valid_cols = set(model.__table__.columns.keys())
+        for k, v in payload.items():
+            if k in valid_cols:
+                setattr(row, k, v)
+        db.commit()
+        return _row_to_dict(model, row)
     except HTTPException:
         raise
     except Exception as exc:
+        db.rollback()
         logger.warning("tables router error", extra={"error": str(exc)})
         raise HTTPException(status_code=500, detail="Internal server error")
 
@@ -229,17 +291,16 @@ def update_row(
 def delete_row(
     table_name: str,
     row_id: str,
-    supabase: Client = Depends(get_supabase),
+    db: Session = Depends(get_db),
 ) -> dict:
-    _validate_table(table_name)
+    model = _validate_table(table_name)
     try:
-        resp = (
-            supabase.table(table_name)
-            .delete()
-            .eq("id", row_id)
-            .execute()
-        )
+        row = db.get(model, _uuid.UUID(row_id))
+        if row is not None:
+            db.delete(row)
+            db.commit()
         return {"deleted": True, "id": row_id}
     except Exception as exc:
+        db.rollback()
         logger.warning("tables router error", extra={"error": str(exc)})
         raise HTTPException(status_code=500, detail="Internal server error")
