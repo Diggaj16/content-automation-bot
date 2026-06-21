@@ -71,6 +71,7 @@ jobs:
           INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
           DEPLOY_DIR: ${{ vars.DEPLOY_DIR }}
           IMAGE_TAG: ${{ github.event.workflow_run.head_sha }}
+          DOMAIN: ${{ vars.DOMAIN }}
         run: |
           set -euo pipefail
           REGISTRY="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.${AWS_REGION}.amazonaws.com"
@@ -80,12 +81,14 @@ jobs:
             --arg region "$AWS_REGION" \
             --arg registry "$REGISTRY" \
             --arg tag "$IMAGE_TAG" \
+            --arg domain "$DOMAIN" \
             '[
               "set -e",
               ("cd " + $dir),
               ("aws ecr get-login-password --region " + $region + " | docker login --username AWS --password-stdin " + $registry),
               ("echo ECR_REGISTRY=" + $registry + " > .env"),
               ("echo IMAGE_TAG=" + $tag + " >> .env"),
+              ("echo DOMAIN=" + $domain + " >> .env"),
               "docker compose -f docker-compose.prod.yml pull",
               "docker compose -f docker-compose.prod.yml up -d",
               "docker image prune -f"

@@ -50,8 +50,6 @@ services:
   api:
     image: ${ECR_REGISTRY}/content-automation-backend:${IMAGE_TAG:-latest}
     restart: unless-stopped
-    ports:
-      - "8000:8000"
     env_file:
       - ./backend.env
     environment:
@@ -94,8 +92,6 @@ services:
   frontend:
     image: ${ECR_REGISTRY}/content-automation-frontend:${IMAGE_TAG:-latest}
     restart: unless-stopped
-    ports:
-      - "3000:3000"
     env_file:
       - ./frontend.env
     environment:
@@ -104,7 +100,27 @@ services:
       api:
         condition: service_healthy
 
+  # Public entrypoint: terminates TLS and reverse-proxies to the frontend
+  # over the internal Docker network. DOMAIN comes from .env (written by the
+  # CD workflow alongside ECR_REGISTRY/IMAGE_TAG) - see infra/README.md.
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN=${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend
+
 volumes:
   postgres_data:
   redis_data:
   browser_sessions:
+  caddy_data:
+  caddy_config:
