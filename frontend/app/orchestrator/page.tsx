@@ -11,11 +11,21 @@ interface Message {
 
 const THREAD_KEY = "orchestrator_thread_id";
 
+// crypto.randomUUID() only exists in secure contexts (HTTPS or localhost) --
+// this app is served over plain HTTP on a bare IP, so it's unavailable there.
+// Uniqueness for a localStorage key is all that's needed, not RFC 4122 strictness.
+function generateId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
 function getOrCreateThreadId(): string {
   if (typeof window === "undefined") return "default";
   let tid = localStorage.getItem(THREAD_KEY);
   if (!tid) {
-    tid = crypto.randomUUID();
+    tid = generateId();
     localStorage.setItem(THREAD_KEY, tid);
   }
   return tid;
@@ -106,7 +116,7 @@ export default function OrchestratorPage() {
   const resetThread = () => {
     // Clear saved messages for the current thread, create a new one
     if (threadId) localStorage.removeItem(messagesKey(threadId));
-    const newId = crypto.randomUUID();
+    const newId = generateId();
     localStorage.setItem(THREAD_KEY, newId);
     setThreadId(newId);
     setMessages([]);
