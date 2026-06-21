@@ -36,13 +36,10 @@ resource "aws_security_group" "app" {
     cidr_blocks = var.allowed_http_cidrs
   }
 
-  ingress {
-    description = "API"
-    from_port   = 8000
-    to_port     = 8000
-    protocol    = "tcp"
-    cidr_blocks = var.allowed_http_cidrs
-  }
+  # Port 8000 (the API) is intentionally NOT exposed publicly. The frontend
+  # reaches it over the internal Docker network (http://api:8000), and nothing
+  # external needs to call it directly. API_KEY (backend/.env) still guards it
+  # as defense-in-depth, but the primary control is just not opening the port.
 
   egress {
     from_port   = 0

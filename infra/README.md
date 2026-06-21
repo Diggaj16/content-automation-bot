@@ -33,9 +33,13 @@ an EC2 instance.
      if cost is a concern; the stack is 5 containers — postgres, redis, api,
      a unified arq worker, frontend — and the worker plus api containers run
      headless Chromium, so don't go below `t3a.medium`)
-   - A security group exposing only 3000 (frontend) and 8000 (API) —
-     restrict `allowed_http_cidrs` (defaults to `0.0.0.0/0`) to your office/VPN
-     IP before applying if this shouldn't be open to the internet
+   - A security group exposing only 3000 (frontend) to the internet — port
+     8000 (the API) is intentionally not public; the frontend reaches it over
+     the internal Docker network. Restrict `allowed_http_cidrs` (defaults to
+     `0.0.0.0/0`) to your office/VPN IP before applying if even the frontend
+     shouldn't be open to the whole internet, or set `BASIC_AUTH_USER` /
+     `BASIC_AUTH_PASSWORD` in `frontend.env` (step 3) to put an HTTP Basic Auth
+     prompt in front of it instead (see `frontend/proxy.ts`)
 
    Note the outputs: `ecr_backend_repo_url`, `ecr_frontend_repo_url`,
    `github_deploy_role_arn`, `instance_id`, `instance_public_ip`.
