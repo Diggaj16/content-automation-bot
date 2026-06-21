@@ -17,9 +17,9 @@ variable "github_repo" {
 }
 
 variable "instance_type" {
-  description = "EC2 instance size. The stack runs 5 arq workers + API + frontend + Redis; two workers run Playwright/Chromium."
+  description = "EC2 instance size. The stack runs postgres + redis + api + one unified arq worker + frontend (5 containers); the worker and api containers run Playwright/Chromium."
   type        = string
-  default     = "t3.large"
+  default     = "t3a.large"
 }
 
 variable "deploy_dir" {
