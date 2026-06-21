@@ -25,7 +25,7 @@ data "aws_ami" "ubuntu" {
 
 resource "aws_security_group" "app" {
   name        = "${var.project_name}-app"
-  description = "Content automation app — no inbound SSH, managed via SSM"
+  description = "Content automation app - no inbound SSH, managed via SSM"
   vpc_id      = data.aws_vpc.default.id
 
   ingress {
