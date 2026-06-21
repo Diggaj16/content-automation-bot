@@ -29,9 +29,10 @@ an EC2 instance.
    - 2 ECR repos (`content-automation-backend`, `content-automation-frontend`)
    - A GitHub OIDC provider + IAM role GitHub Actions assumes to push images
      and trigger deploys (no AWS keys stored in GitHub)
-   - One EC2 instance (default `t3.large` — tune via `-var instance_type=...`
-     if cost is a concern; two of the workers run headless Chromium and the
-     stack is 7 containers, so don't go below `t3.medium`)
+   - One EC2 instance (default `t3a.large` — tune via `-var instance_type=...`
+     if cost is a concern; the stack is 5 containers — postgres, redis, api,
+     a unified arq worker, frontend — and the worker plus api containers run
+     headless Chromium, so don't go below `t3a.medium`)
    - A security group exposing only 3000 (frontend) and 8000 (API) —
      restrict `allowed_http_cidrs` (defaults to `0.0.0.0/0`) to your office/VPN
      IP before applying if this shouldn't be open to the internet

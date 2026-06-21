@@ -1,8 +1,9 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Growthvine Capital — Content Automation Stack (PRODUCTION)
 #
-# Same topology as docker-compose.yml, but pulls pre-built images from ECR
-# instead of building locally. Used on the EC2 deploy target.
+# Same topology as docker-compose.yml (single unified arq worker on
+# arq:default), but pulls pre-built images from ECR instead of building
+# locally. Used on the EC2 deploy target.
 #
 # Requires a .env file alongside this one (not committed) with:
 #   ECR_REGISTRY=<account-id>.dkr.ecr.<region>.amazonaws.com
@@ -72,9 +73,9 @@ services:
       retries: 3
       start_period: 15s
 
-  worker-research:
+  worker:
     image: ${ECR_REGISTRY}/content-automation-backend:${IMAGE_TAG:-latest}
-    command: ["python", "-m", "arq", "app.queue.research_worker.ResearchWorkerSettings"]
+    command: ["python", "-m", "arq", "app.queue.worker.WorkerSettings"]
     restart: unless-stopped
     env_file:
       - ./backend.env
@@ -89,66 +90,6 @@ services:
     volumes:
       - browser_sessions:/root/.config/contentautomation/browser_sessions
     shm_size: "1gb"
-
-  worker-scoring:
-    image: ${ECR_REGISTRY}/content-automation-backend:${IMAGE_TAG:-latest}
-    command: ["python", "-m", "arq", "app.queue.scoring_worker.ScoringWorkerSettings"]
-    restart: unless-stopped
-    env_file:
-      - ./backend.env
-    environment:
-      - DATABASE_URL=postgresql+psycopg://postgres:postgres@postgres:5432/contentautomation
-      - REDIS_URL=redis://redis:6379
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-
-  worker-creation:
-    image: ${ECR_REGISTRY}/content-automation-backend:${IMAGE_TAG:-latest}
-    command: ["python", "-m", "arq", "app.queue.creation_worker.CreationWorkerSettings"]
-    restart: unless-stopped
-    env_file:
-      - ./backend.env
-    environment:
-      - DATABASE_URL=postgresql+psycopg://postgres:postgres@postgres:5432/contentautomation
-      - REDIS_URL=redis://redis:6379
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-
-  worker-publishing:
-    image: ${ECR_REGISTRY}/content-automation-backend:${IMAGE_TAG:-latest}
-    command: ["python", "-m", "arq", "app.queue.publishing_worker.PublishingWorkerSettings"]
-    restart: unless-stopped
-    env_file:
-      - ./backend.env
-    environment:
-      - DATABASE_URL=postgresql+psycopg://postgres:postgres@postgres:5432/contentautomation
-      - REDIS_URL=redis://redis:6379
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-
-  worker-analytics:
-    image: ${ECR_REGISTRY}/content-automation-backend:${IMAGE_TAG:-latest}
-    command: ["python", "-m", "arq", "app.queue.analytics_worker.AnalyticsWorkerSettings"]
-    restart: unless-stopped
-    env_file:
-      - ./backend.env
-    environment:
-      - DATABASE_URL=postgresql+psycopg://postgres:postgres@postgres:5432/contentautomation
-      - REDIS_URL=redis://redis:6379
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
 
   frontend:
     image: ${ECR_REGISTRY}/content-automation-frontend:${IMAGE_TAG:-latest}
