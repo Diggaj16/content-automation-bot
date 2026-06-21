@@ -29,17 +29,27 @@ resource "aws_security_group" "app" {
   vpc_id      = data.aws_vpc.default.id
 
   ingress {
-    description = "Frontend"
-    from_port   = 3000
-    to_port     = 3000
+    description = "HTTP (Caddy - ACME challenge + redirect to HTTPS)"
+    from_port   = 80
+    to_port     = 80
     protocol    = "tcp"
     cidr_blocks = var.allowed_http_cidrs
   }
 
-  # Port 8000 (the API) is intentionally NOT exposed publicly. The frontend
-  # reaches it over the internal Docker network (http://api:8000), and nothing
-  # external needs to call it directly. API_KEY (backend/.env) still guards it
-  # as defense-in-depth, but the primary control is just not opening the port.
+  ingress {
+    description = "HTTPS (Caddy)"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = var.allowed_http_cidrs
+  }
+
+  # Port 3000 (the frontend) and port 8000 (the API) are intentionally NOT
+  # exposed publicly anymore. Caddy is the only public-facing service - it
+  # terminates TLS and reverse-proxies to the frontend over the internal
+  # Docker network (http://frontend:3000), which in turn reaches the API over
+  # that same internal network (http://api:8000). API_KEY (backend/.env)
+  # still guards the API as defense-in-depth.
 
   egress {
     from_port   = 0
@@ -83,6 +93,24 @@ resource "aws_iam_instance_profile" "app_instance" {
   role = aws_iam_role.app_instance.name
 }
 
+# Allocated independently of the instance (no `instance` attribute set here)
+# so there's no dependency cycle with the instance's user_data, which needs
+# this IP's value to render the Caddyfile domain before the instance exists.
+resource "aws_eip" "app" {
+  domain = "vpc"
+
+  tags = {
+    Name = "${var.project_name}-app"
+  }
+}
+
+locals {
+  # sslip.io resolves "<ip-with-dashes>.sslip.io" to the embedded IP with zero
+  # registration/DNS setup - a free way to get a real public hostname (and
+  # therefore a Let's Encrypt cert) pointed at a fixed Elastic IP.
+  app_domain = "${replace(aws_eip.app.public_ip, ".", "-")}.sslip.io"
+}
+
 resource "aws_instance" "app" {
   ami                         = data.aws_ami.ubuntu.id
   instance_type               = var.instance_type
@@ -101,6 +129,7 @@ resource "aws_instance" "app" {
   user_data = templatefile("${path.module}/user_data.sh.tftpl", {
     deploy_dir = var.deploy_dir
     compose    = file("${path.module}/../../docker-compose.prod.yml")
+    caddyfile  = file("${path.module}/../../Caddyfile")
   })
 
   tags = {
@@ -108,10 +137,24 @@ resource "aws_instance" "app" {
   }
 }
 
+resource "aws_eip_association" "app" {
+  instance_id   = aws_instance.app.id
+  allocation_id = aws_eip.app.id
+}
+
 output "instance_id" {
   value = aws_instance.app.id
 }
 
 output "instance_public_ip" {
-  value = aws_instance.app.public_ip
+  value = aws_eip.app.public_ip
+}
+
+output "app_domain" {
+  description = "Free sslip.io hostname pointed at the Elastic IP - set this as the DOMAIN GitHub Actions variable"
+  value       = local.app_domain
+}
+
+output "app_url" {
+  value = "https://${local.app_domain}"
 }

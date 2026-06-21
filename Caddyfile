@@ -1,0 +1,9 @@
+# Reverse proxy for the Growthvine Content Automation stack.
+#
+# DOMAIN is the sslip.io hostname derived from the instance's Elastic IP
+# (see infra/terraform/ec2.tf -> local.app_domain), supplied as an env var
+# via docker-compose.prod.yml. Caddy auto-provisions and renews a Let's
+# Encrypt cert for it - no manual cert management needed.
+{$DOMAIN} {
+	reverse_proxy frontend:3000
+}

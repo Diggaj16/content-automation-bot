@@ -33,16 +33,28 @@ an EC2 instance.
      if cost is a concern; the stack is 5 containers — postgres, redis, api,
      a unified arq worker, frontend — and the worker plus api containers run
      headless Chromium, so don't go below `t3a.medium`)
-   - A security group exposing only 3000 (frontend) to the internet — port
-     8000 (the API) is intentionally not public; the frontend reaches it over
-     the internal Docker network. Restrict `allowed_http_cidrs` (defaults to
-     `0.0.0.0/0`) to your office/VPN IP before applying if even the frontend
-     shouldn't be open to the whole internet, or set `BASIC_AUTH_USER` /
-     `BASIC_AUTH_PASSWORD` in `frontend.env` (step 3) to put an HTTP Basic Auth
-     prompt in front of it instead (see `frontend/proxy.ts`)
+   - A security group exposing only 80/443 to the internet, fronted by Caddy
+     — neither the frontend (3000) nor the API (8000) is reachable directly;
+     Caddy terminates TLS and reverse-proxies to the frontend over the
+     internal Docker network, which in turn reaches the API the same way.
+     Restrict `allowed_http_cidrs` (defaults to `0.0.0.0/0`) to your office/VPN
+     IP before applying if even the public site shouldn't be open to the whole
+     internet, or set `BASIC_AUTH_USER` / `BASIC_AUTH_PASSWORD` in
+     `frontend.env` (step 3) to put an HTTP Basic Auth prompt in front of it
+     instead (see `frontend/proxy.ts`)
+   - A fixed Elastic IP, so the public address survives instance replacement
+     (e.g. from a future `user_data` change). Caddy auto-provisions a free
+     Let's Encrypt cert for `<ip-with-dashes>.sslip.io`, which resolves to that
+     IP with zero DNS setup — see the `app_domain` / `app_url` outputs.
 
    Note the outputs: `ecr_backend_repo_url`, `ecr_frontend_repo_url`,
-   `github_deploy_role_arn`, `instance_id`, `instance_public_ip`.
+   `github_deploy_role_arn`, `instance_id`, `instance_public_ip`, `app_domain`,
+   `app_url`.
+
+   This particular apply (adding the Elastic IP + Caddy) replaces the existing
+   EC2 instance — `user_data` changes force replacement — so the IP **will
+   change** from whatever it was before. Use the post-apply `instance_public_ip`
+   / `app_domain` outputs, not any IP noted earlier.
 
 2. **Configure GitHub** (repo Settings → Secrets and variables → Actions):
 
@@ -52,6 +64,7 @@ an EC2 instance.
    | Variable | `AWS_REGION`          | e.g. `ap-south-1`                        |
    | Variable | `EC2_INSTANCE_ID`     | `instance_id` output                     |
    | Variable | `DEPLOY_DIR`          | `/opt/content-automation`                |
+   | Variable | `DOMAIN`              | `app_domain` output (or your own domain) |
 
 3. **Put real secrets on the instance.** Terraform creates empty
    `backend.env` / `frontend.env` files on the box — it never touches them

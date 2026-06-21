@@ -29,7 +29,7 @@ variable "deploy_dir" {
 }
 
 variable "allowed_http_cidrs" {
-  description = "CIDRs allowed to reach the frontend (3000) and API (8000) ports"
+  description = "CIDRs allowed to reach the app over HTTP/HTTPS (ports 80/443, fronted by Caddy)"
   type        = list(string)
   default     = ["0.0.0.0/0"]
 }

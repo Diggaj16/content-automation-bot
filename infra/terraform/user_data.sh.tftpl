@@ -23,6 +23,10 @@ cat > ${deploy_dir}/docker-compose.prod.yml <<'COMPOSE_EOF'
 ${compose}
 COMPOSE_EOF
 
+cat > ${deploy_dir}/Caddyfile <<'CADDY_EOF'
+${caddyfile}
+CADDY_EOF
+
 # backend.env / frontend.env are NOT created here — they hold secrets and are
 # provisioned once by hand (see infra/README.md), never by Terraform or CI.
 touch ${deploy_dir}/backend.env ${deploy_dir}/frontend.env
