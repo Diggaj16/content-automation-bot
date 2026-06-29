@@ -86,11 +86,10 @@ function DraftCard({ draft, onAction }: { draft: Draft; onAction: (id: string) =
               {draft.target_persona}
             </span>
           )}
-          {draft.compliance_status && (
+          {(draft.compliance_status === 'approved' || draft.compliance_status === 'flagged') && (
             <span className={`px-2 py-0.5 rounded text-[10px] uppercase font-semibold border ${
               draft.compliance_status === 'approved' ? 'bg-green-50 text-green-700 border-green-200' :
-              draft.compliance_status === 'flagged' ? 'bg-amber-50 text-amber-700 border-amber-200' :
-              'bg-red-50 text-red-700 border-red-200'
+              'bg-amber-50 text-amber-700 border-amber-200'
             }`}>
               Compliance: {draft.compliance_status}
             </span>
@@ -217,11 +216,10 @@ function ReadOnlyDraftRow({ draft }: { draft: Draft }) {
               {draft.target_persona}
             </span>
           )}
-          {draft.compliance_status && (
+          {(draft.compliance_status === 'approved' || draft.compliance_status === 'flagged') && (
             <span className={`px-2 py-0.5 rounded text-[10px] uppercase font-semibold border ${
               draft.compliance_status === 'approved' ? 'bg-green-50 text-green-700 border-green-200' :
-              draft.compliance_status === 'flagged' ? 'bg-amber-50 text-amber-700 border-amber-200' :
-              'bg-red-50 text-red-700 border-red-200'
+              'bg-amber-50 text-amber-700 border-amber-200'
             }`}>
               Compliance: {draft.compliance_status}
             </span>

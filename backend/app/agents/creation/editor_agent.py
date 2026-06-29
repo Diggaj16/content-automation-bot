@@ -50,6 +50,8 @@ _SYSTEM_PROMPT = (
     "points, and the branded takeaway section. Do not reorganise or remove any structural "
     "element — only improve the language within each section.\n\n"
     "Do not add a legal disclaimer. Growthvine's posts do not carry one.\n\n"
+    "Strip out any emoji you find in the draft and never add new ones. Plain text and "
+    "the bold Unicode headers are the only formatting allowed.\n\n"
     "Return only the finalised text. No preamble, no commentary, no explanation of changes made."
 )
 

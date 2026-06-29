@@ -77,17 +77,22 @@ _SYSTEM_PROMPT = (
     "sentence instead.\n\n"
     "Frame an idea by stating what it is not before stating what it is. Make the point "
     "directly.\n\n"
+    "Use emoji anywhere in the post, for any reason — not as bullets, not as section "
+    "markers, not as a takeaway flourish. Plain text and the bold Unicode headers only.\n\n"
     "Add a legal disclaimer inside the post. Growthvine's posts do not carry one."
 )
 
 _PLATFORM_GUIDES: dict[str, str] = {
     "whatsapp": (
-        "Write a highly concise WhatsApp broadcast message for institutional clients/advisors (under 150 words).\n\n"
-        "Structure:\n"
-        "- 🚨 Core macro/market update in one strong sentence.\n"
-        "- 📉 Impact on portfolios (use bullets).\n"
-        "- 💡 Actionable institutional perspective or tactical shift.\n"
-        "Tone is urgent, strictly professional, and skimmable."
+        "Write a tight WhatsApp broadcast message for clients/advisors (under 150 words, 4-7 short lines).\n\n"
+        "Open with a concrete number, date, or situation the reader can picture — not a generic alert line. "
+        "Explain the mechanism in one or two short sentences: what happened and why it actually matters to "
+        "their money or compliance position. Close with a single forward-looking or actionable line.\n\n"
+        "Rules:\n"
+        "- Short lines, no long paragraphs — this is a broadcast message, not a memo.\n"
+        "- No emoji anywhere in the message.\n"
+        "- No filler, no formal disclaimer, no listicle structure.\n"
+        "- Tone is direct, specific, and skimmable — never alarmist."
     ),
     "carousel": (
         "Write copy for a 5-10 slide analytical LinkedIn carousel.\n\n"
@@ -119,19 +124,20 @@ _PLATFORM_GUIDES: dict[str, str] = {
         "- CONTEXT ASIDE (only when a term needs it): one or two lines defining the key concept for non-specialists.\n"
         "- BODY: 3–6 short sections, each introduced by its OWN bold Unicode subheader, each explaining "
         "one facet of the story with concrete numbers. Use • or ▸ bullets for lists of measures, reasons, or takeaways.\n"
-        "- TAKEAWAY: a closing section under a bold header like '𝗧𝗵𝗲 𝗕𝗼𝘁𝘁𝗼𝗺 𝗟𝗶𝗻𝗲' or "
-        "'💡 The Growthvine Capital Perspective' that ties it together in 2–4 lines.\n"
+        "- TAKEAWAY: a closing section under a bold header such as 'The Bottom Line' or "
+        "'The Growthvine Capital Perspective' (rendered in the same bold Unicode style as the "
+        "other headers) that ties it together in 2–4 lines.\n"
         "- Optionally a single engagement question on the final line.\n\n"
         "Rules:\n"
         "- Every section must contain at least one specific number, date, or named entity from the source.\n"
         "- Bold Unicode for ALL section headers; normal text for the body.\n"
-        "- Emoji only as a takeaway marker (💡/▸) — at most 1–2 in the whole post.\n"
+        "- No emoji anywhere in the post. Use • or ▸ for bullets, never emoji.\n"
         "- No formal disclaimer line. No generic filler ('In today's world', 'In conclusion')."
     ),
     "twitter": (
         "Write a Twitter/X thread (6-8 tweets, each strictly under 280 characters).\n\n"
         "Structure:\n"
-        "- Tweet 1: Bold hook with a surprising data point. Start with 🧵\n"
+        "- Tweet 1: Bold hook with a surprising data point. No emoji.\n"
         "- Tweets 2-3: What happened and why (specific numbers)\n"
         "- Tweets 4-5: Historical parallel or contrarian perspective\n"
         "- Tweet 6: Second-order effect or what to watch for\n"
@@ -140,6 +146,7 @@ _PLATFORM_GUIDES: dict[str, str] = {
         "- Number each tweet: 1/, 2/, etc.\n"
         "- Separate tweets with a blank line\n"
         "- Each tweet must standalone — no cliffhangers mid-thought\n"
+        "- No emoji anywhere in the thread\n"
         "- No investment advice or stock recommendations"
     ),
     "blog": (
