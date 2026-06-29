@@ -647,7 +647,6 @@ async def creation_agent_task(
     from app.agents.creation.brand_context import get_brand_context
     from app.agents.creation.content_generator import async_generate_content
     from app.agents.creation.editor_agent import async_refine_draft
-    from app.agents.creation.compliance_agent import async_check_compliance
     from app.agents.creation.finance_flags import detect_finance_flags
     from app.agents.creation.db_writer import write_draft, upsert_cost_log
     from app.agents.scoring.embedder import embed_text
@@ -823,18 +822,6 @@ async def creation_agent_task(
                     model=settings.claude_model_heavy
                 )
                 draft_create.content_text = refined_text
-
-                # Step 6 — Compliance Agent
-                comp_res = await async_check_compliance(
-                    draft_text=draft_create.content_text,
-                    client=anthropic_client,
-                    model=settings.claude_model_heavy
-                )
-                draft_create.content_text = comp_res.fixed_text
-                draft_create.compliance_status = comp_res.status
-
-                if comp_res.status != "approved":
-                    draft_create.agent_reasoning += f" | Compliance Note: {comp_res.reason}"
 
                 # Step 7 — Detect finance flags
                 flags = detect_finance_flags(draft_create.content_text)
